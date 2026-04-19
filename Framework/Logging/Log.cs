@@ -70,6 +70,14 @@ public static class Log
     private static readonly JsonSerializerOptions _jsonOpts = new()
     {
         WriteIndented = false,
+        // JimsProxy: explicit DefaultJsonTypeInfoResolver re-enables reflection-based
+        // serialization for trimmed/PublishSingleFile builds. Without this,
+        // JsonSerializer.Serialize throws InvalidOperationException
+        // "Reflection-based serialization has been disabled for this application"
+        // when called with anonymous types. We use anonymous types extensively in
+        // Log.Event payloads, so source-gen is not practical here. The runtime cost
+        // is identical to the default reflection path on net8+.
+        TypeInfoResolver = new System.Text.Json.Serialization.Metadata.DefaultJsonTypeInfoResolver(),
     };
 
     /// <summary>

@@ -22,8 +22,41 @@
     <IncludeNativeLibrariesForSelfExtract Condition="$([MSBuild]::IsOSPlatform('Windows'))">true</IncludeNativeLibrariesForSelfExtract>
     <SelfContained>true</SelfContained>
     <PublishSingleFile>true</PublishSingleFile>
-    <PublishTrimmed>true</PublishTrimmed>
+    <!-- JimsProxy: PublishTrimmed disabled. Xian55's CI ships with trimming on,
+         but the codebase has multiple reflection-based hot paths (packet handler
+         dispatch in WorldSocket/WorldClient via Activator.CreateInstance +
+         MakeGenericMethod, Singleton<T> non-public ctor lookup, GameData
+         GetFields/GetProperties on generic T, VersionChecker
+         Assembly.GetType(string)) that the trimmer can't see and silently
+         strips. This results in MissingMethodException / NullReferenceException
+         at startup. Each one is a separate trim casualty; fixing them
+         individually is whack-a-mole.
+         Binary size: ~79MB untrimmed vs ~20MB trimmed (compressed bundle ~25MB
+         vs ~9MB). We accept the size hit until a proper trim-safe audit lands.
+         Tracked: backlog item "trim-safety audit". -->
+    <PublishTrimmed>false</PublishTrimmed>
   </PropertyGroup>
+
+  <ItemGroup Condition="'$(UsePublishBuildSettings)' == 'true'">
+    <!-- JimsProxy: trim-fix #1. System.Configuration.ConfigurationManager loads
+         ClientConfigurationHost via reflection (Activator.CreateInstance), which
+         the trimmer can't see, so the parameterless ctor gets stripped and
+         ConfigurationManager.OpenMappedExeConfiguration throws
+         MissingMethodException at startup. Rooting the assembly preserves
+         the type and its ctor. The IL2104 warning during publish was the canary.
+         Same trim issue exists in Xian55 upstream. -->
+    <TrimmerRootAssembly Include="System.Configuration.ConfigurationManager" />
+
+    <!-- JimsProxy: trim-fix #2. Phase 1's Log.Event(string, object) serializes
+         anonymous types via JsonSerializer.Serialize. Trimmed apps disable
+         reflection-based JSON by default (throws InvalidOperationException
+         "Reflection-based serialization has been disabled for this application").
+         This switch re-enables the reflection fallback so anonymous payloads
+         serialize without us having to convert every call site to use
+         JsonSerializerContext source-gen. The IL2026 warnings on Log.cs:140/145
+         during publish were the canary. -->
+    <RuntimeHostConfigurationOption Include="System.Text.Json.JsonSerializer.IsReflectionEnabledByDefault" Value="true" Trim="true" />
+  </ItemGroup>
 
   <PropertyGroup Condition="$([MSBuild]::IsOSPlatform('Windows'))">
     <DefineConstants>_WINDOWS</DefineConstants>
