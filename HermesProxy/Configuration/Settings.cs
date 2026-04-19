@@ -28,6 +28,9 @@ public static class Settings
     public static bool DebugOutput;
     public static bool PacketsLog;
     public static bool SpanStatsLog;
+    // JimsProxy: structured JSONL diagnostic logging
+    public static bool StructuredLog;
+    public static bool VerboseLog;
 
     public static bool LoadAndVerifyFrom(ConfigurationParser config)
     {
@@ -50,6 +53,15 @@ public static class Settings
         DebugOutput = config.GetBoolean("DebugOutput", false);
         PacketsLog = config.GetBoolean("PacketsLog", true);
         SpanStatsLog = config.GetBoolean("SpanStatsLog", false);
+        // JimsProxy: structured logging defaults on; toggle VerboseLog to enable per-packet Verbose console output
+        StructuredLog = config.GetBoolean("StructuredLog", true);
+        VerboseLog = config.GetBoolean("VerboseLog", false);
+        Log.StructuredLogEnabled = StructuredLog;
+        Log.VerboseLogEnabled = VerboseLog;
+        // Open the JSONL file now so session.start's payload can include the full path.
+        // Without this, the first call to Log.Event evaluates payload args (including
+        // Log.StructuredLogPath) before EnsureJsonlOpen runs inside Event().
+        Log.StartStructuredLog();
 
         return VerifyConfig();
     }

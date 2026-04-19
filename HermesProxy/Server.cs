@@ -98,6 +98,23 @@ partial class Server
         Log.Print(LogType.Server, $"Modern (Client) Build: {Settings.ClientBuild}");
         Log.Print(LogType.Server, $"Legacy (Server) Build: {Settings.ServerBuild}");
 
+        // JimsProxy: structured session.start event
+        Log.Event("session.start", new
+        {
+            version = GetVersionInformation(),
+            client_build = Settings.ClientBuild.ToString(),
+            server_build = Settings.ServerBuild.ToString(),
+            server_address = Settings.ServerAddress,
+            server_port = Settings.ServerPort,
+            bnet_port = Settings.BNetPort,
+            realm_port = Settings.RealmPort,
+            instance_port = Settings.InstancePort,
+            rest_port = Settings.RestPort,
+            reported_os = Settings.ReportedOS,
+            reported_platform = Settings.ReportedPlatform,
+            structured_log_path = Log.StructuredLogPath,
+        });
+
         GameData.LoadEverything();
 
         var bindIp = NetworkUtils.ResolveOrDirectIPv64(Settings.ExternalAddress);
@@ -154,6 +171,10 @@ partial class Server
         Console.WriteLine($"(bnetSocketServer.IsListening: {bnetSocketServer.IsListening}");
         Console.WriteLine($"(realmSocketServer.IsListening: {realmSocketServer.IsListening}");
         Console.WriteLine($"(worldSocketServer.IsListening: {worldSocketServer.IsListening}");
+
+        // JimsProxy: emit session.end and flush JSONL
+        Log.Event("session.end", null);
+        Log.FlushAndCloseStructuredLog();
     }
 
     private static SocketManager<TSocketType> StartServer<TSocketType>(IPEndPoint bindIp) where TSocketType : ISocket

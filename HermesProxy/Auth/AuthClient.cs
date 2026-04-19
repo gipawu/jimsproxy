@@ -62,8 +62,17 @@ public partial class AuthClient
 
         try
         {
-            var serverIpAddress = NetworkUtils.ResolveOrDirectIPv4(Settings.ServerAddress); 
+            var serverIpAddress = NetworkUtils.ResolveOrDirectIPv4(Settings.ServerAddress);
             Log.PrintNet(LogType.Network, LogNetDir.P2S, $"Connecting to auth server... (realmlist addr: {Settings.ServerAddress}:{Settings.ServerPort}) (resolved as: {serverIpAddress}:{Settings.ServerPort})");
+            // JimsProxy: structured event
+            Log.Event("auth.realmd.connect", new
+            {
+                host = Settings.ServerAddress,
+                resolved_ip = serverIpAddress.ToString(),
+                port = Settings.ServerPort,
+                username = username,
+                locale = locale,
+            });
             _clientSocket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
             // Connect to the specified host.
             var endPoint = new IPEndPoint(serverIpAddress, Settings.ServerPort);
@@ -76,6 +85,13 @@ public partial class AuthClient
         }
 
         _response.Task.ConfigureAwait(false).GetAwaiter().GetResult();
+
+        // JimsProxy: record handshake outcome
+        Log.Event("auth.realmd.handshake", new
+        {
+            username = username,
+            result = _response.Task.Result.ToString(),
+        });
 
         return _response.Task.Result;
     }

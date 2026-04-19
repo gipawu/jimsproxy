@@ -106,6 +106,12 @@ public partial class WorldSocket : SocketBase, BnetServices.INetwork
     {
         string ip_address = GetRemoteIpAddress()!.ToString();
 
+        // JimsProxy: modern client TCP-connected to our world listener
+        Log.Event("world.client.connect", new
+        {
+            remote = ip_address,
+        });
+
         _packetBuffer.Resize(ClientConnectionInitialize.Length + 1);
 
         AsyncReadWithCallback(InitializeHandler);
@@ -327,21 +333,65 @@ public partial class WorldSocket : SocketBase, BnetServices.INetwork
     {
         Opcode universalOpcode = packet.GetUniversalOpcode(isModern: true);
         var handler = GetHandler(universalOpcode);
+
+        // JimsProxy: structured packet.in (c2s)
+        uint packetSize = packet.GetSize();
+        uint rawOpcode = packet.GetOpcode();
+        Log.Event("packet.in", new
+        {
+            direction = "c2s",
+            opcode_universal = universalOpcode.ToString(),
+            opcode_raw = rawOpcode,
+            size = packetSize,
+            has_handler = handler != null,
+        });
+
         if (handler != null)
         {
-            if (HermesProxy.Server.MetricsEnabled)
+            // JimsProxy: wrap handler dispatch in try/catch so packet.error is
+            // emitted for any handler exception, and still let Xian55's metrics
+            // collector record per-opcode latency when --metrics is enabled.
+            long startTimestamp = Stopwatch.GetTimestamp();
+            try
             {
-                long startTimestamp = Stopwatch.GetTimestamp();
                 handler.Invoke(this, packet);
-                HermesProxy.Server.Metrics.RecordClientToServerLatency(universalOpcode, Stopwatch.GetElapsedTime(startTimestamp).Ticks);
+                long elapsedTicks = Stopwatch.GetElapsedTime(startTimestamp).Ticks;
+                if (HermesProxy.Server.MetricsEnabled)
+                    HermesProxy.Server.Metrics.RecordClientToServerLatency(universalOpcode, elapsedTicks);
+
+                Log.Event("packet.translated", new
+                {
+                    direction = "c2s",
+                    opcode_universal = universalOpcode.ToString(),
+                    opcode_raw = rawOpcode,
+                    duration_us = elapsedTicks / (TimeSpan.TicksPerMillisecond / 1000),
+                });
             }
-            else
+            catch (Exception exJP)
             {
-                handler.Invoke(this, packet);
+                Log.Event("packet.error", new
+                {
+                    direction = "c2s",
+                    opcode_universal = universalOpcode.ToString(),
+                    opcode_raw = rawOpcode,
+                    exception_type = exJP.GetType().FullName,
+                    message = exJP.Message,
+                    stack_first_line = exJP.StackTrace?.Split('\n')[0]?.Trim(),
+                });
+                throw;
             }
         }
         else
+        {
+            Log.Event("packet.untranslated", new
+            {
+                direction = "c2s",
+                opcode_universal = universalOpcode.ToString(),
+                opcode_raw = rawOpcode,
+                size = packetSize,
+            });
             Log.PrintNet(LogType.Warn, LogNetDir.C2P, $"No handler for opcode {universalOpcode} ({packet.GetOpcode()}) (Got unknown packet from ModernClient)");
+        }
     }
 
     private void SendPacketToServer(WorldPacket packet, Opcode delayUntilOpcode = Opcode.MSG_NULL_ACTION)
@@ -1119,6 +1169,12 @@ public partial class WorldSocket : SocketBase, BnetServices.INetwork
                 _clientPacketTable[msgAttr.Opcode] = new PacketHandler(methodInfo, parameters[0].ParameterType);
             }
         }
+
+        // JimsProxy: report handler count for c2s dispatch
+        Log.Event("handlers.registered.c2s", new
+        {
+            count = _clientPacketTable.Count,
+        });
     }
 
     public class PacketHandler

@@ -67,6 +67,14 @@ public partial class WorldClient
         {
             var ip = NetworkUtils.ResolveOrDirectIPv4(realm.ExternalAddress);
             Log.Print(LogType.Network, $"World Server address {realm.ExternalAddress}:{realm.Port} resolved as {ip}:{realm.Port}");
+            // JimsProxy: structured event
+            Log.Event("world.mangos.connect", new
+            {
+                host = realm.ExternalAddress,
+                resolved_ip = ip.ToString(),
+                port = (int)realm.Port,
+                realm_name = realm.Name,
+            });
             _clientSocket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
             // Connect to the specified host.
             var endPoint = new IPEndPoint(ip, realm.Port);
@@ -75,6 +83,7 @@ public partial class WorldClient
         catch (Exception ex)
         {
             Log.Print(LogType.Error, $"Socket Error: {ex.Message}");
+            Log.Event("world.mangos.connect_error", new { error = ex.Message });
             _isSuccessful = false;
         }
 
@@ -403,35 +412,84 @@ public partial class WorldClient
         Opcode universalOpcode = packet.GetUniversalOpcode(false);
         Log.PrintNet(LogType.Debug, LogNetDir.S2P, $"Received opcode {universalOpcode} ({packet.GetOpcode()}).");
 
-        long startTimestamp = HermesProxy.Server.MetricsEnabled ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
-
-        switch (universalOpcode)
+        // JimsProxy: structured packet.in (s2c — from legacy server)
+        uint packetSizeJP = packet.GetSize();
+        uint rawOpcodeJP = packet.GetOpcode();
+        bool hasHandlerJP =
+            universalOpcode == Opcode.SMSG_AUTH_CHALLENGE ||
+            universalOpcode == Opcode.SMSG_AUTH_RESPONSE ||
+            universalOpcode == Opcode.SMSG_ADDON_INFO ||
+            _packetHandlers.ContainsKey(universalOpcode);
+        Log.Event("packet.in", new
         {
-            case Opcode.SMSG_AUTH_CHALLENGE:
-                HandleAuthChallenge(packet);
-                break;
-            case Opcode.SMSG_AUTH_RESPONSE:
-                HandleAuthResponse(packet);
-                break;
-            case Opcode.SMSG_ADDON_INFO:
-                break; // don't need to handle
-            default:
-                if (_packetHandlers.ContainsKey(universalOpcode))
+            direction = "s2c",
+            opcode_universal = universalOpcode.ToString(),
+            opcode_raw = rawOpcodeJP,
+            size = packetSizeJP,
+            has_handler = hasHandlerJP,
+        });
+
+        long startTimestamp = System.Diagnostics.Stopwatch.GetTimestamp();
+        try
+        {
+            switch (universalOpcode)
+            {
+                case Opcode.SMSG_AUTH_CHALLENGE:
+                    HandleAuthChallenge(packet);
+                    break;
+                case Opcode.SMSG_AUTH_RESPONSE:
+                    HandleAuthResponse(packet);
+                    break;
+                case Opcode.SMSG_ADDON_INFO:
+                    break; // don't need to handle
+                default:
+                    if (_packetHandlers.ContainsKey(universalOpcode))
+                    {
+                        _packetHandlers[universalOpcode](packet);
+                    }
+                    else
+                    {
+                        Log.PrintNet(LogType.Warn, LogNetDir.S2P, $"No handler for opcode {universalOpcode} ({packet.GetOpcode()}) (Got unknown packet from WorldServer)");
+                        Log.Event("packet.untranslated", new
+                        {
+                            direction = "s2c",
+                            opcode_universal = universalOpcode.ToString(),
+                            opcode_raw = rawOpcodeJP,
+                            size = packetSizeJP,
+                        });
+                        if (_isSuccessful == null)
+                            _isSuccessful = false;
+                    }
+                    break;
+            }
+
+            long elapsedTicks = Stopwatch.GetElapsedTime(startTimestamp).Ticks;
+            if (HermesProxy.Server.MetricsEnabled)
+                HermesProxy.Server.Metrics.RecordServerToClientLatency(universalOpcode, elapsedTicks);
+
+            if (hasHandlerJP)
+            {
+                Log.Event("packet.translated", new
                 {
-                    _packetHandlers[universalOpcode](packet);
-                }
-                else
-                {
-                    Log.PrintNet(LogType.Warn, LogNetDir.S2P, $"No handler for opcode {universalOpcode} ({packet.GetOpcode()}) (Got unknown packet from WorldServer)");
-                    if (_isSuccessful == null)
-                        _isSuccessful = false;
-                }
-                break;
+                    direction = "s2c",
+                    opcode_universal = universalOpcode.ToString(),
+                    opcode_raw = rawOpcodeJP,
+                    duration_us = elapsedTicks / (TimeSpan.TicksPerMillisecond / 1000),
+                });
+            }
         }
-
-        if (HermesProxy.Server.MetricsEnabled)
+        catch (Exception exJP)
         {
-            HermesProxy.Server.Metrics.RecordServerToClientLatency(universalOpcode, Stopwatch.GetElapsedTime(startTimestamp).Ticks);
+            Log.Event("packet.error", new
+            {
+                direction = "s2c",
+                opcode_universal = universalOpcode.ToString(),
+                opcode_raw = rawOpcodeJP,
+                exception_type = exJP.GetType().FullName,
+                message = exJP.Message,
+                stack_first_line = exJP.StackTrace?.Split('\n')[0]?.Trim(),
+            });
+            throw;
         }
 
         SendDelayedPacketsToServerOnOpcode(universalOpcode);
@@ -614,5 +672,11 @@ public partial class WorldClient
         }
 
         _packetHandlers = dict.ToFrozenDictionary();
+
+        // JimsProxy: report handler count for s2c dispatch
+        Log.Event("handlers.registered.s2c", new
+        {
+            count = _packetHandlers.Count,
+        });
     }
 }

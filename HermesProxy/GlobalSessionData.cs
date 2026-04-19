@@ -1105,6 +1105,17 @@ public class GlobalSessionData
 
     public void OnDisconnect()
     {
+        // JimsProxy: structured session.disconnect — emitted once per cleanup with snapshot
+        Framework.Logging.Log.Event("session.disconnect", new
+        {
+            had_auth_client = AuthClient != null,
+            had_world_client = WorldClient != null,
+            had_realm_socket = RealmSocket != null,
+            had_instance_socket = InstanceSocket != null,
+            had_modern_sniff = ModernSniff != null,
+            account_login = AccountInfo?.Login,
+        });
+
         if (ModernSniff != null)
         {
             ModernSniff.CloseFile();
