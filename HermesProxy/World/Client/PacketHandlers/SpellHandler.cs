@@ -1089,50 +1089,58 @@ public partial class WorldClient
     [PacketHandler(Opcode.SMSG_SPELL_DISPELL_LOG)]
     void HandleSpellDispellLog(WorldPacket packet)
     {
-        SpellDispellLog spell = new();
-        spell.TargetGUID = packet.ReadPackedGuid().To128(GetSession().GameState);
-        spell.CasterGUID = packet.ReadPackedGuid().To128(GetSession().GameState);
+        // Kronos's vanilla format for this opcode is not fully understood —
+        // neither the standard mangos layout nor the collaborator's assumption
+        // matches the actual wire bytes. Wrap in try-catch so a parse failure
+        // doesn't kill the session (dispel log is cosmetic).
+        try
+        {
+            SpellDispellLog spell = new();
+            spell.TargetGUID = packet.ReadPackedGuid().To128(GetSession().GameState);
+            spell.CasterGUID = packet.ReadPackedGuid().To128(GetSession().GameState);
 
-        if (LegacyVersion.AddedInVersion(ClientVersionBuild.V2_0_1_6180))
-        {
-            spell.DispelledBySpellID = GameData.GetModernSpellId(packet.ReadUInt32());
-        }
-        else
-        {
-            // 1.12 sends a 4-byte field here — advance the buffer, use our tracked ID.
-            packet.ReadUInt32();
-            spell.DispelledBySpellID = GetSession().GameState.LastDispellSpellId;
-        }
-
-        bool hasDebug;
-        if (LegacyVersion.AddedInVersion(ClientVersionBuild.V2_0_1_6180))
-        {
-            hasDebug = packet.ReadBool();
-        }
-        else
-        {
-            // 1.12 sends a 1-byte dummy flag here — must read to align buffer before count.
-            packet.ReadUInt8();
-            hasDebug = false;
-        }
-
-        int count = packet.ReadInt32();
-        for (int i = 0; i < count; i++)
-        {
-            SpellDispellData dispel = new SpellDispellData();
-            dispel.SpellID = GameData.GetModernSpellId(packet.ReadUInt32());
             if (LegacyVersion.AddedInVersion(ClientVersionBuild.V2_0_1_6180))
-                dispel.Harmful = packet.ReadBool();
-            spell.DispellData.Add(dispel);
-        }
+            {
+                spell.DispelledBySpellID = GameData.GetModernSpellId(packet.ReadUInt32());
+            }
+            else
+            {
+                spell.DispelledBySpellID = GetSession().GameState.LastDispellSpellId;
+            }
 
-        if (hasDebug)
+            bool hasDebug;
+            if (LegacyVersion.AddedInVersion(ClientVersionBuild.V2_0_1_6180))
+                hasDebug = packet.ReadBool();
+            else
+                hasDebug = false;
+
+            int count = packet.ReadInt32();
+            if (count < 0 || count > 100)
+                return; // Sanity check — bad parse, bail without crashing
+
+            for (int i = 0; i < count; i++)
+            {
+                SpellDispellData dispel = new SpellDispellData();
+                dispel.SpellID = GameData.GetModernSpellId(packet.ReadUInt32());
+                if (LegacyVersion.AddedInVersion(ClientVersionBuild.V2_0_1_6180))
+                    dispel.Harmful = packet.ReadBool();
+                spell.DispellData.Add(dispel);
+            }
+
+            if (hasDebug)
+            {
+                packet.ReadInt32();
+                packet.ReadInt32();
+            }
+
+            SendPacketToClient(spell);
+        }
+        catch
         {
-            packet.ReadInt32(); // unk
-            packet.ReadInt32(); // unk
+            // Parse failed — Kronos wire format unknown. Dispel still works
+            // gameplay-wise (buff is removed server-side); only the combat log
+            // entry is lost.
         }
-
-        SendPacketToClient(spell);
     }
 
     [PacketHandler(Opcode.SMSG_PLAY_SPELL_VISUAL)]
