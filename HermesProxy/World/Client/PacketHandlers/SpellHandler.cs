@@ -486,11 +486,13 @@ public partial class WorldClient
             // ExpansionVersion==1 keeps this vanilla-only; the whitelist CSV is vanilla-only,
             // and haste-adjusted GCDs on TBC+ would make the blanket 1500ms wrong.
             // JimsProxy (issue #43): use the legacy (1.12) spell id for whitelist / GCD-duration
-            // lookups when the cast was SoM-renumbered. The rewrite at line ~466 already
+            // lookups when the cast was SoM-renumbered. The rewrite a few lines above already
             // changed spell.Cast.SpellID to the modern id for the outbound packet, but
             // OffGcdSpells and Spell1sGcd are keyed on legacy ids (the CSVs are vanilla Spell.dbc
-            // extracts). Without this, SoM on-use trinkets like Diamond Flask (17626 → 363880)
-            // miss the whitelist and get held 1500ms on every press.
+            // extracts). This is defensive: any future SoM-renumbered spell that the DBC marks
+            // off-GCD would silently miss the whitelist without this fallback. (Most currently
+            // renumbered on-use items, e.g. Diamond Flask 24427, are on-GCD per the 1.12 DBC
+            // — so today this branch is mostly an insurance policy, not load-bearing.)
             uint gcdLookupId = pendingCast.LegacySpellId != 0
                 ? pendingCast.LegacySpellId
                 : (uint)spell.Cast.SpellID;
