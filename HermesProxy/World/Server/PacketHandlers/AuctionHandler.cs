@@ -50,7 +50,10 @@ public partial class WorldSocket
     [PacketHandler(Opcode.CMSG_AUCTION_LIST_ITEMS)]
     void HandleAuctionListItems(AuctionListItems auction)
     {
-        
+        var now = DateTime.UtcNow;
+        if ((now - _lastSearchTime).TotalSeconds < 4)
+            return;
+        _lastSearchTime = now;
 
         WorldPacket packet = new WorldPacket(Opcode.CMSG_AUCTION_LIST_ITEMS);
         packet.WriteGuid(auction.Auctioneer.To64());
