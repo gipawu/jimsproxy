@@ -307,8 +307,10 @@ public class UnlearnedSpells : ServerPacket, ISpanWritable
 
 public class SendSpellHistory : ServerPacket, ISpanWritable
 {
-    // Practical cap for spell history at login
-    private const int MaxEntries = 64;
+    // Practical cap for spell history at login.
+    // Bumped to 128 so level-60 chars with full cooldown rotations don't trip the
+    // fallback path on every login.
+    private const int MaxEntries = 128;
     // Each entry: 6 fixed fields (24) + bits (1) = 25 bytes (unused optionals)
     private const int MaxEntrySize = 25;
 
@@ -320,7 +322,7 @@ public class SendSpellHistory : ServerPacket, ISpanWritable
         Entries.ForEach(p => p.Write(_worldPacket));
     }
 
-    // MaxSize: count (4) + 64 entries (25 each) = 1604
+    // MaxSize: count (4) + 128 entries (25 each) = 3204
     public int MaxSize => 4 + MaxEntries * MaxEntrySize;
 
     public int WriteToSpan(Span<byte> buffer)
@@ -977,6 +979,72 @@ public class SpellFailedOther : ServerPacket, ISpanWritable
     public uint SpellID;
     public uint SpellXSpellVisualID;
     public byte Reason;
+}
+
+//MIRASU - SMSG_CANCEL_SPELL_VISUAL terminates the active spell visual on a unit. Used
+//MIRASU   alongside SpellInterruptLog when a mob's cast is kicked: cancelling the visual
+//MIRASU   forces the target-frame cast bar (driven off the visual kit) to dismiss.
+//MIRASU   The SpellVisualID is the SpellVisual.dbc record ID, NOT the SpellXSpellVisual
+//MIRASU   wrapper ID -- resolve via GameData.GetSpellVisualIdFromXSpellVisual.
+public class CancelSpellVisual : ServerPacket, ISpanWritable
+{
+    public CancelSpellVisual() : base(Opcode.SMSG_CANCEL_SPELL_VISUAL, ConnectionType.Instance) { }
+
+    public override void Write()
+    {
+        _worldPacket.WritePackedGuid128(Source);
+        _worldPacket.WriteInt32(SpellVisualID);
+    }
+
+    public int MaxSize => PackedGuidHelper.MaxPackedGuid128Size + 4;
+
+    public int WriteToSpan(Span<byte> buffer)
+    {
+        var writer = new SpanPacketWriter(buffer);
+        writer.WritePackedGuid128(Source.Low, Source.High);
+        writer.WriteInt32(SpellVisualID);
+        return writer.Position;
+    }
+
+    public WowGuid128 Source;
+    public int SpellVisualID;
+}
+
+//MIRASU - SMSG_SPELL_INTERRUPT_LOG is the dedicated interrupt-broadcast opcode in modern
+//MIRASU   WoW (1.14+). The target-frame cast bar's dismiss-on-kick is wired to this packet,
+//MIRASU   not to SMSG_SPELL_FAILED_OTHER. Vanilla 1.12 didn't have this opcode, so the proxy
+//MIRASU   has to synthesize it whenever it forwards a Reason=Interrupted FAILED_OTHER for a
+//MIRASU   non-player caster (mob being kicked / counterspelled).
+//MIRASU   Wire layout: Caster (PackedGuid128) + Victim (PackedGuid128) + InterruptedSpellID
+//MIRASU   (int32) + BackfireSpellID (int32, school lockout spell -- 0 if unknown).
+public class SpellInterruptLog : ServerPacket, ISpanWritable
+{
+    public SpellInterruptLog() : base(Opcode.SMSG_SPELL_INTERRUPT_LOG, ConnectionType.Instance) { }
+
+    public override void Write()
+    {
+        _worldPacket.WritePackedGuid128(Caster);
+        _worldPacket.WritePackedGuid128(Victim);
+        _worldPacket.WriteInt32(InterruptedSpellID);
+        _worldPacket.WriteInt32(BackfireSpellID);
+    }
+
+    public int MaxSize => PackedGuidHelper.MaxPackedGuid128Size * 2 + 4 * 2;
+
+    public int WriteToSpan(Span<byte> buffer)
+    {
+        var writer = new SpanPacketWriter(buffer);
+        writer.WritePackedGuid128(Caster.Low, Caster.High);
+        writer.WritePackedGuid128(Victim.Low, Victim.High);
+        writer.WriteInt32(InterruptedSpellID);
+        writer.WriteInt32(BackfireSpellID);
+        return writer.Position;
+    }
+
+    public WowGuid128 Caster;
+    public WowGuid128 Victim;
+    public int InterruptedSpellID;
+    public int BackfireSpellID;
 }
 
 public class SpellStart : ServerPacket
