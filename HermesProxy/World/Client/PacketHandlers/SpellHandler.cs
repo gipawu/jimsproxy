@@ -412,6 +412,10 @@ public partial class WorldClient
             // SoM-renumbered item: rewrite the legacy spell id back to the modern one the client expects.
             if (pendingCast.LegacySpellId != 0)
                 spell.Cast.SpellID = (int)pendingCast.SpellId;
+            // JimsProxy issue #43 follow-up: capture the wire-reported cast time so the
+            // GCD-hold gate in HandleSpellGo can tell instant casts (Kronos emits
+            // SMSG_SPELL_START even for these) apart from real cast-time spells.
+            pendingCast.StartedCastTimeMs = spell.Cast.CastTime;
 
             SpellPrepare prepare = new();
             prepare.ClientCastID = pendingCast.ClientGUID;
@@ -473,6 +477,58 @@ public partial class WorldClient
                 prepare.ClientCastID = pendingCast.ClientGUID;
                 prepare.ServerCastID = spell.Cast.CastID;
                 SendPacketToClient(prepare);
+            }
+
+            // JimsProxy (issue #43): start the local GCD hold window only for INSTANT on-GCD
+            // player casts on vanilla. Matching a pending queue entry filters out proc /
+            // triggered SMSG_SPELL_GOs (e.g. Windfury Weapon, weapon enchant procs, Thunderfury
+            // chain lightning, Hand of Justice) — those have no CMSG_CAST_SPELL from the
+            // client, so PendingNormalCasts has no matching entry. Real cast-time spells
+            // (CastTime > 0) had their server-side GCD start at SMSG_SPELL_START, so by the
+            // time SMSG_SPELL_GO arrives the GCD has already expired during the cast — starting
+            // a fresh 1500ms hold here would be a spurious post-cast delay. Finally, gating on
+            // ExpansionVersion==1 keeps this vanilla-only; the whitelist CSV is vanilla-only,
+            // and haste-adjusted GCDs on TBC+ would make the blanket 1500ms wrong.
+            //
+            // JimsProxy issue #43 follow-up: gate on StartedCastTimeMs == 0 (instant) instead
+            // of !HasStarted. Kronos 1.12 emits SMSG_SPELL_START even for instants (Arcane
+            // Explosion, Counterspell, etc.), so the old !HasStarted gate caused BeginGcd to
+            // be skipped for every instant cast → no GCD hold → mid-GCD mashes flooded Kronos
+            // and bounced back as SMSG_SPELL_FAILURE. Bug bundle showed 4 NOT_READY failures
+            // per AE GCD on 2026-04-26.
+            //
+            // JimsProxy (issue #43): use the legacy (1.12) spell id for whitelist / GCD-duration
+            // lookups when the cast was SoM-renumbered. The rewrite a few lines above already
+            // changed spell.Cast.SpellID to the modern id for the outbound packet, but
+            // OffGcdSpells and Spell1sGcd are keyed on legacy ids (the CSVs are vanilla Spell.dbc
+            // extracts). This is defensive: any future SoM-renumbered spell that the DBC marks
+            // off-GCD would silently miss the whitelist without this fallback. (Most currently
+            // renumbered on-use items, e.g. Diamond Flask 24427, are on-GCD per the 1.12 DBC
+            // — so today this branch is mostly an insurance policy, not load-bearing.)
+            uint gcdLookupId = pendingCast.LegacySpellId != 0
+                ? pendingCast.LegacySpellId
+                : (uint)spell.Cast.SpellID;
+
+            if (LegacyVersion.ExpansionVersion == 1 &&
+                pendingCast.StartedCastTimeMs == 0 &&
+                !GameData.IsOffGcd(gcdLookupId))
+            {
+                long gcdMs = GameData.GetGcdDurationMs(gcdLookupId);
+                long now = Environment.TickCount64;
+                long expireAt = now + gcdMs;
+                long fireAt = expireAt - Framework.Settings.SpellCastEarlyFireOffsetMs;
+                GetSession().GameState.BeginGcd(expireAt, fireAt);
+
+                // JimsProxy: gcd.begin — pairs with spell.held / spell.held_fire to reconstruct
+                // the full GCD timeline for a session. legacy_lookup_id is non-zero only for
+                // SoM-renumbered items so we can spot whitelist misses post-hoc.
+                Log.Event("gcd.begin", new
+                {
+                    spell_id = spell.Cast.SpellID,
+                    gcd_ms = gcdMs,
+                    fire_offset_ms = Framework.Settings.SpellCastEarlyFireOffsetMs,
+                    legacy_lookup_id = pendingCast.LegacySpellId,
+                });
             }
         }
         else if (GetSession().GameState.CurrentPlayerGuid == spell.Cast.CasterUnit &&
@@ -1181,6 +1237,21 @@ public partial class WorldClient
         aura.AuraData.Duration = duration;
         aura.AuraData.Remaining = duration;
 
+        //MIRASU: Populate CastUnit and set NoCaster when caster is unknown — same rule as
+        //MIRASU: the UpdateHandler aura loop. SMSG_UPDATE_AURA_DURATION arrives during login
+        //MIRASU: (Kronos refreshes durations on every player-own aura right after
+        //MIRASU: SMSG_UPDATE_OBJECT) and ReadAuraSlot doesn't fill CastUnit itself. Without
+        //MIRASU: this block the delta SMSG_AURA_UPDATE(updateAll=false) we emit writes
+        //MIRASU: CastUnit=default with NoCaster=false — which the 1.14.2 client silently
+        //MIRASU: mishandles in its /reload-survivable aura cache. Symptom is buff icons
+        //MIRASU: visible during the session but gone after /reload, until the next fresh
+        //MIRASU: cast repopulates UnitAuraCaster and a subsequent delta overwrites the
+        //MIRASU: polluted slot with a display-valid entry.
+        var castUnit = GetSession().GameState.GetAuraCaster(guid, slot, aura.AuraData.SpellID);
+        aura.AuraData.CastUnit = castUnit;
+        if (castUnit == default)
+            aura.AuraData.Flags |= AuraFlagsModern.NoCaster;
+
         AuraUpdate update = new AuraUpdate(guid, false);
         update.Auras.Add(aura);
         SendPacketToClient(update);
@@ -1220,7 +1291,15 @@ public partial class WorldClient
         if (aura.AuraData.SpellID != spellId)
             return;
 
-        aura.AuraData.CastUnit = GetSession().GameState.GetAuraCaster(guid, slot, spellId);
+        //MIRASU: Set NoCaster when caster lookup returns empty — same rule as the
+        //MIRASU: UpdateHandler aura loop and HandleUpdateAuraDuration. SMSG_SET_EXTRA_AURA_INFO
+        //MIRASU: is a TBC-style duration push that fires on target aura slots (mob debuffs,
+        //MIRASU: party buffs). Without the NoCaster flag on an empty-caster delta the modern
+        //MIRASU: client's /reload-survivable aura cache drops the entry.
+        var castUnit = GetSession().GameState.GetAuraCaster(guid, slot, spellId);
+        aura.AuraData.CastUnit = castUnit;
+        if (castUnit == default)
+            aura.AuraData.Flags |= AuraFlagsModern.NoCaster;
         aura.AuraData.Flags |= AuraFlagsModern.Duration;
         aura.AuraData.Duration = durationFull;
         aura.AuraData.Remaining = durationLeft;

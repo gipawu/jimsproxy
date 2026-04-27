@@ -2099,7 +2099,26 @@ public partial class WorldClient
                                 aura.AuraData.Duration = durationFull;
                                 aura.AuraData.Remaining = durationLeft;
                             }
-                            aura.AuraData.CastUnit = GetSession().GameState.GetAuraCaster(guid, i, aura.AuraData.SpellID);
+                            //MIRASU: Set NoCaster flag when caster lookup fails, or the 1.14.2 client's
+                            //MIRASU: UI buff-bar treats the aura as malformed-for-display (icon hidden)
+                            //MIRASU: even though the effect engine still applies stat mods from the spell
+                            //MIRASU: ID alone. Symptom: on a fresh session or after /reload, the player's
+                            //MIRASU: own auras (Power Word: Fortitude, Stealth, class passives, etc.) have
+                            //MIRASU: no icon — HP bonus is still applied, stealth still hides — but the
+                            //MIRASU: buff bar is empty until some later packet refreshes the slot. Other
+                            //MIRASU: units' auras are fine because those get populated in UnitAuraCaster
+                            //MIRASU: when we see the cast happen in-session. The player's own pre-login
+                            //MIRASU: auras never had that event, so GetAuraCaster returns empty, CastUnit
+                            //MIRASU: gets serialized without data, and AuraDataInfo.Write sets bit
+                            //MIRASU: (CastUnit != default) to false — which the modern client reads as
+                            //MIRASU: "missing caster info, not display-safe" unless NoCaster flag is set.
+                            //MIRASU: The WotLK branch in VersionChecker.ConvertAuraFlags already sets
+                            //MIRASU: NoCaster from a wire bit; 1.12's AuraFlagsVanilla has no such bit,
+                            //MIRASU: so we infer it here from the caster-lookup result.
+                            var castUnit = GetSession().GameState.GetAuraCaster(guid, i, aura.AuraData.SpellID);
+                            aura.AuraData.CastUnit = castUnit;
+                            if (castUnit == default)
+                                aura.AuraData.Flags |= AuraFlagsModern.NoCaster;
                         }
                         else if (updateMaskArray[UNIT_FIELD_AURA + i])
                         {
@@ -2129,7 +2148,7 @@ public partial class WorldClient
                 var flags = legacyFlags.CastFlags<PlayerFlags>();
                 if (updateData.Guid == GetSession().GameState.CurrentPlayerGuid)
                     GetSession().GameState.CurrentPlayerStorage.Settings.PatchFlags(ref flags); // Some patches like auto guild inv decline
-                updateData.PlayerData.PlayerFlags = (uint) flags;
+                updateData.PlayerData.PlayerFlags = (uint)flags;
 
                 if (updateData.PlayerData.PlayerFlagsEx == null)
                     updateData.PlayerData.PlayerFlagsEx = 0;
@@ -2143,9 +2162,9 @@ public partial class WorldClient
                     updateData.UnitData.PvpFlags = ReadPvPFlags(guid, updates);
             }
             else if (updateData.Guid == GetSession().GameState.CurrentPlayerGuid && GetSession().GameState.CurrentPlayerStorage.Settings.NeedToForcePatchFlags)
-            { // If we did not patch the PlayerFlags the first time, we need to force include the field
+            {   // If we did not patch the PlayerFlags the first time, we need to force include the field
                 PlayerFlags flags = GetSession().GameState.CurrentPlayerStorage.Settings.CreateNewFlags();
-                updateData.PlayerData.PlayerFlags = (uint) flags;
+                updateData.PlayerData.PlayerFlags = (uint)flags;
             }
 
             int PLAYER_GUILDID = LegacyVersion.GetUpdateField(PlayerField.PLAYER_GUILDID);

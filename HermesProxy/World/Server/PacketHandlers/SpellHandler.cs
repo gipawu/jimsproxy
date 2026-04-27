@@ -117,6 +117,16 @@ public partial class WorldSocket
 
         bool isNextMelee = GameData.NextMeleeSpells.Contains(cast.Cast.SpellID);
         bool isAutoRepeat = GameData.AutoRepeatSpells.Contains(cast.Cast.SpellID);
+        // JimsProxy (issue #43): the GCD hold-and-fire path is vanilla-only. On TBC+ the
+        // OffGcdSpells whitelist is empty (LoadOffGcdSpells is gated) and haste-adjusted
+        // server GCDs make the blanket 1500ms assumption wrong.
+        bool isVanillaServer = LegacyVersion.ExpansionVersion == 1;
+        bool isOffGcd = isVanillaServer && GameData.IsOffGcd((uint)cast.Cast.SpellID);
+
+        // JimsProxy (issue #43): wire up the GCD-expiry callback once per session so the Timer
+        // in GameSessionData can forward held casts via this socket.
+        if (isVanillaServer && GetSession().GameState.OnGcdHeldCastFire == null)
+            GetSession().GameState.OnGcdHeldCastFire = ForwardHeldGcdCast;
 
         if (isNextMelee || isAutoRepeat)
         {
@@ -162,18 +172,106 @@ public partial class WorldSocket
             castRequest.ClientGUID = cast.Cast.CastID;
             castRequest.ServerGUID = WowGuid128.Create(HighGuidType703.Cast, SpellCastSource.Normal, (uint)GetSession().GameState.CurrentMapId!, cast.Cast.SpellID, 10000 + cast.Cast.CastID.GetCounter());
 
-            // Check if there's already a cast in progress - reject without forwarding to server
-            // This prevents interrupting the current cast (player gets "Another action is in progress")
-            if (GetSession().GameState.HasStartedNormalCast())
+            // JimsProxy (issue #43): off-GCD spells (Sprint, Evasion, Trinket, racials, etc)
+            // bypass both the HasStartedNormalCast cast-bar gate and the GCD hold path. A real
+            // 1.12 client would fire these mid-cast-bar and mid-GCD, so we match that.
+            if (!isOffGcd)
             {
-                SendCastRequestFailed(castRequest, false);
-                return;
-            }
+                // Check if there's already a cast in progress - reject without forwarding to server
+                // This prevents interrupting the current cast (player gets "Another action is in progress")
+                if (GetSession().GameState.HasStartedNormalCast())
+                {
+                    SendCastRequestFailed(castRequest, false);
+                    return;
+                }
 
-            // Enqueue the cast - responses will be matched by SpellId in FIFO order
-            GetSession().GameState.PendingNormalCasts.Enqueue(castRequest);
+                // JimsProxy (issue #43): if we're inside a GCD hold window, build the CMSG_CAST_SPELL
+                // packet now but don't forward it — store it as the pending held cast. The Timer
+                // set up in SMSG_SPELL_GO will release it at (estimated GCD expiry - early offset).
+                // Mashing during GCD overwrites the held slot so only the most recent press fires.
+                if (GetSession().GameState.IsGcdHoldActive())
+                {
+                    WorldPacket heldPacket = BuildCastSpellPacket(cast);
+                    castRequest.HeldPacketForReplay = heldPacket;
+                    // Capture remaining GCD before TryHold so the diagnostic event reflects
+                    // the value at decision time, not after the hold was installed.
+                    long gcdRemainingBeforeHold = GetSession().GameState.GetGcdRemainingMs();
+                    castRequest.HeldAtTickMs = Environment.TickCount64;
+                    if (GetSession().GameState.TryHoldCastDuringGcd(castRequest, out var displaced))
+                    {
+                        // JimsProxy: spell.held — emit before the displaced/ack work so the
+                        // event sequence reads top-down: hold → displaced → ack.
+                        Log.Event("spell.held", new
+                        {
+                            spell_id = cast.Cast.SpellID,
+                            gcd_remaining_ms = gcdRemainingBeforeHold,
+                            displaced_spell_id = displaced?.SpellId ?? 0,
+                            client_cast_id = castRequest.ClientGUID.ToString(),
+                        });
+
+                        // If mashing displaces a previously-held cast, we still need to resolve
+                        // its ClientGUID/ServerGUID pair on the client (SpellPrepare was sent
+                        // when it was first held). Silently dropping it leaks client-side cast
+                        // tracking per displaced press. Mirrors ClearNonStartedNormalCasts in
+                        // HandleSpellStart — reason is SpellInProgress, which the 1.14 client
+                        // treats as "overridden by newer cast".
+                        if (displaced != null)
+                        {
+                            // JimsProxy: spell.held_displaced — separate event so we can count
+                            // displacements (mashing rate) independent of holds (press rate).
+                            Log.Event("spell.held_displaced", new
+                            {
+                                displaced_spell_id = displaced.SpellId,
+                                replaced_by_spell_id = cast.Cast.SpellID,
+                                displaced_held_for_ms = displaced.HeldAtTickMs > 0
+                                    ? Environment.TickCount64 - displaced.HeldAtTickMs
+                                    : 0L,
+                            });
+                            SendCastRequestFailed(displaced, false);
+                        }
+
+                        // Acknowledge the keypress immediately so the 1.14 client's UI doesn't feel
+                        // unresponsive while we hold the cast.
+                        SpellPrepare heldPrepare = new SpellPrepare();
+                        heldPrepare.ClientCastID = castRequest.ClientGUID;
+                        heldPrepare.ServerCastID = castRequest.ServerGUID;
+                        SendPacket(heldPrepare);
+                        return;
+                    }
+                    // Else: GCD expired between IsGcdHoldActive() and TryHoldCastDuringGcd() —
+                    // fall through and forward normally.
+                    // JimsProxy: spell.held_race_fallthrough — should be rare. If we see this
+                    // event firing often, the IsGcdHoldActive→TryHoldCastDuringGcd window is
+                    // tighter than expected and the 0ms fire offset is bleeding holds.
+                    Log.Event("spell.held_race_fallthrough", new
+                    {
+                        spell_id = cast.Cast.SpellID,
+                        gcd_remaining_ms_at_check = gcdRemainingBeforeHold,
+                    });
+                }
+
+                // Enqueue the cast - responses will be matched by SpellId in FIFO order
+                GetSession().GameState.PendingNormalCasts.Enqueue(castRequest);
+            }
+            else
+            {
+                // Off-GCD path: still enqueue so SMSG_SPELL_GO can match back to the ClientGUID,
+                // but skip the cast-bar gate and the GCD hold.
+                GetSession().GameState.PendingNormalCasts.Enqueue(castRequest);
+            }
         }
 
+        WorldPacket packet = BuildCastSpellPacket(cast);
+        SendPacketToServer(packet);
+    }
+
+    /// <summary>
+    /// JimsProxy (issue #43): build the outbound CMSG_CAST_SPELL wire packet from a CastSpell.
+    /// Extracted so the GCD hold path can construct the packet up front and the timer callback
+    /// can send it verbatim when the GCD expires.
+    /// </summary>
+    private WorldPacket BuildCastSpellPacket(CastSpell cast)
+    {
         SpellCastTargetFlags targetFlags = ConvertSpellTargetFlags(cast.Cast.Target);
 
         WorldPacket packet = new WorldPacket(Opcode.CMSG_CAST_SPELL);
@@ -193,7 +291,37 @@ public partial class WorldSocket
             packet.WriteUInt8((byte)cast.Cast.SendCastFlags);
         }
         WriteSpellTargets(cast.Cast.Target, targetFlags, packet);
-        SendPacketToServer(packet);
+        return packet;
+    }
+
+    /// <summary>
+    /// JimsProxy (issue #43): invoked by the GCD-expiry Timer (ThreadPool thread) when a held
+    /// cast should be released. Enqueues the cast into PendingNormalCasts (so the eventual
+    /// SMSG_SPELL_GO can match it back via SpellId/ClientGUID) and forwards the pre-built
+    /// CMSG_CAST_SPELL packet to Kronos. The SpellPrepare ACK was already sent when the cast
+    /// was first held. Takes PendingCastsLock so the Enqueue doesn't interleave with a
+    /// drain-filter-rebuild on the WorldClient thread — otherwise a concurrent drain could
+    /// pick up the newly-enqueued cast and wrongly match it against an unrelated SMSG_SPELL_GO.
+    /// </summary>
+    internal void ForwardHeldGcdCast(ClientCastRequest cast)
+    {
+        if (cast.HeldPacketForReplay == null)
+            return;
+
+        var gameState = GetSession().GameState;
+        lock (gameState.PendingCastsLock)
+        {
+            gameState.PendingNormalCasts.Enqueue(cast);
+        }
+        // JimsProxy: spell.held_fire — captures total hold duration (press → server forward).
+        // Compare against gcd_remaining_ms in the matching spell.held to reconstruct GCD timing.
+        Log.Event("spell.held_fire", new
+        {
+            spell_id = cast.SpellId,
+            held_for_ms = cast.HeldAtTickMs > 0 ? Environment.TickCount64 - cast.HeldAtTickMs : 0L,
+            client_cast_id = cast.ClientGUID.ToString(),
+        });
+        SendPacketToServer(cast.HeldPacketForReplay);
     }
     [PacketHandler(Opcode.CMSG_PET_CAST_SPELL)]
     void HandlePetCastSpell(PetCastSpell cast)
@@ -268,6 +396,29 @@ public partial class WorldSocket
     [PacketHandler(Opcode.CMSG_CANCEL_CAST)]
     void HandleCancelCast(CancelCast cast)
     {
+        // JimsProxy (issue #43): if the client cancels while we have a held cast waiting for
+        // GCD expiry, drop the held cast so it doesn't fire after the cancel. Because
+        // HandleCastSpell already sent SpellPrepare binding ClientCastID↔ServerCastID when
+        // the cast was first held, we must route the dropped cast through SendCastRequestFailed
+        // so the 1.14 client's cast-tracking map releases the entry. Silently dropping it
+        // would leak the ClientGUID/ServerGUID mapping.
+        ClientCastRequest? dropped = GetSession().GameState.CancelGcdHold();
+        if (dropped != null)
+        {
+            // JimsProxy: spell.held_cancel — emitted when the client cancels a cast while
+            // we were still holding one. Lets us distinguish "user changed their mind during
+            // GCD" from genuine displacement/firing in bug bundles.
+            Log.Event("spell.held_cancel", new
+            {
+                dropped_spell_id = dropped.SpellId,
+                cancelled_spell_id = cast.SpellID,
+                held_for_ms = dropped.HeldAtTickMs > 0
+                    ? Environment.TickCount64 - dropped.HeldAtTickMs
+                    : 0L,
+            });
+            SendCastRequestFailed(dropped, false);
+        }
+
         WorldPacket packet = new WorldPacket(Opcode.CMSG_CANCEL_CAST);
         if (LegacyVersion.AddedInVersion(ClientVersionBuild.V3_0_2_9056))
             packet.WriteUInt8(0);
