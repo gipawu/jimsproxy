@@ -369,31 +369,49 @@ function addon:ZONE_CHANGED_NEW_AREA()
     wipe(npcCastTimeCache)
 end
 
-function addon:CHAT_MSG_SYSTEM(message)
-    if message:sub(1, 6) ~= "JP_CH:" then return end
+local proxyCastTimes = {}
 
-    local sig = message:sub(7, 7)
-    if sig == "S" then
-        local payload = message:sub(9)
-        local lastColon = payload:match(".*():")
-        if lastColon then
-            local guidStr = payload:sub(1, lastColon - 1)
-            local spellId = tonumber(payload:sub(lastColon + 1))
-            if guidStr and spellId and guidStr ~= self.PLAYER_GUID then
-                local duration = channeledSpells[spellId]
-                if not duration then return end
-                local spellName, _, icon = GetSpellInfo(spellId)
-                if not spellName then return end
-                local isSrcPlayer = (strfind(guidStr, "Player-") ~= nil)
-                self:StoreCast(guidStr, spellName, spellId, icon, duration, isSrcPlayer, true)
+function addon:CHAT_MSG_SYSTEM(message)
+    local prefix = message:sub(1, 6)
+    if prefix == "JP_CH:" then
+        local sig = message:sub(7, 7)
+        if sig == "S" then
+            local payload = message:sub(9)
+            local lastColon = payload:match(".*():")
+            if lastColon then
+                local guidStr = payload:sub(1, lastColon - 1)
+                local spellId = tonumber(payload:sub(lastColon + 1))
+                if guidStr and spellId and guidStr ~= self.PLAYER_GUID then
+                    local duration = namespace.channeledSpells[spellId]
+                    if not duration then return end
+                    local spellName, _, icon = GetSpellInfo(spellId)
+                    if not spellName then return end
+                    local isSrcPlayer = (strfind(guidStr, "Player-") ~= nil)
+                    self:StoreCast(guidStr, spellName, spellId, icon, duration, isSrcPlayer, true)
+                end
+            end
+        elseif sig == "X" then
+            local guidStr = message:sub(9)
+            if guidStr and guidStr ~= "" and guidStr ~= self.PLAYER_GUID then
+                local cast = activeTimers[guidStr]
+                if cast and cast.isChanneled then
+                    self:DeleteCast(guidStr, nil, nil, true)
+                end
             end
         end
-    elseif sig == "X" then
-        local guidStr = message:sub(9)
-        if guidStr and guidStr ~= "" and guidStr ~= self.PLAYER_GUID then
-            local cast = activeTimers[guidStr]
-            if cast and cast.isChanneled then
-                self:DeleteCast(guidStr, nil, nil, true)
+    elseif message:sub(1, 6) == "JP_CS:" then
+        local payload = message:sub(7)
+        local lastColon2 = payload:match(".*():")
+        if lastColon2 then
+            local front = payload:sub(1, lastColon2 - 1)
+            local castTime = tonumber(payload:sub(lastColon2 + 1))
+            local lastColon1 = front:match(".*():")
+            if lastColon1 and castTime then
+                local guidStr = front:sub(1, lastColon1 - 1)
+                local spellId = tonumber(front:sub(lastColon1 + 1))
+                if guidStr and spellId then
+                    proxyCastTimes[guidStr] = castTime
+                end
             end
         end
     end
@@ -477,7 +495,8 @@ function addon:PLAYER_LOGIN()
     self.PLAYER_LOGIN = nil
 
     ChatFrame_AddMessageEventFilter("CHAT_MSG_SYSTEM", function(_, _, msg)
-        if msg:sub(1, 6) == "JP_CH:" then
+        local p = msg:sub(1, 3)
+        if p == "JP_" then
             return true
         end
     end)
@@ -577,7 +596,11 @@ function addon:COMBAT_LOG_EVENT_UNFILTERED()
         local isSrcPlayer = bit_band(srcFlags, COMBATLOG_OBJECT_CONTROL_PLAYER) > 0
 
         if srcGUID ~= self.PLAYER_GUID then
-            if isSrcPlayer then
+            local proxyCast = proxyCastTimes[srcGUID]
+            if proxyCast then
+                castTime = proxyCast
+                proxyCastTimes[srcGUID] = nil
+            elseif isSrcPlayer then
                 -- Use hardcoded talent reduced cast time for certain player spells
                 local reducedTime = castTimeTalentDecreases[spellName]
                 if reducedTime then
