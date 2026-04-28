@@ -1,0 +1,14 @@
+## Interface: 11400
+## Title: JimsPlus
+## Notes: Bundled client-side fixes for JimsProxy / Classic WoW 1.14 Launcher
+## SavedVariables: JimsPlusDB, JimsPlusCastbarsDB
+## SavedVariablesPerCharacter: JimsPlusCastbarsCharDB
+## Author: JimsProxy Team (CastBars based on ClassicCastbars by Wardz)
+## Version: 1.0.0
+
+Core.lua
+castbars/PoolManager.lua
+castbars/AnchorManager.lua
+castbars/Data.lua
+castbars/CastBars.lua
+castbars/Frames.lua
