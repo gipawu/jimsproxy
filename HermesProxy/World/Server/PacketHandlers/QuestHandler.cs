@@ -55,14 +55,24 @@ public partial class WorldSocket
             return;
 
         uint questId = (uint)logEntry.QuestID;
+        //MIRASU - ConcurrentDictionary.TryRemove for cross-thread safety (abandon runs on server thread,
+        //MIRASU   item-credit handlers run on client thread).
         var progressMap = GetSession().GameState.QuestItemObjectiveProgress;
         foreach (var k in progressMap.Keys.Where(k => k.QuestID == questId).ToList())
-            progressMap.Remove(k);
+            progressMap.TryRemove(k, out _);
         //MIRASU - also clear from the saved snapshot so a logout/login can't restore stale entries
         //MIRASU   for an abandoned quest (otherwise a re-accept would inherit the pre-abandon total).
         if (GetSession().SavedQuestItemProgressByCharacter.TryGetValue(GetSession().GameState.CurrentPlayerGuid, out var savedForPlayer))
             foreach (var k in savedForPlayer.Keys.Where(k => k.QuestID == questId).ToList())
-                savedForPlayer.Remove(k);
+                savedForPlayer.TryRemove(k, out _);
+        //MIRASU - persist the post-abandon saved snapshot to disk so a crash before the next
+        //MIRASU   graceful logout can't restore a stale entry for the just-abandoned quest on
+        //MIRASU   the next proxy start (otherwise a re-accept would inherit the pre-abandon total).
+        GetSession().PersistQuestItemProgressForCurrentPlayer();
+        //MIRASU - drop any buffered credits whose itemId belongs to this abandoned quest's objectives.
+        //MIRASU   Without this, a buffered credit from before the abandon could be replayed against a
+        //MIRASU   re-accept (or a different active quest sharing the item) when its template arrives.
+        worldClient.DropPendingQuestItemCreditsForQuest(questId);
     }
     [PacketHandler(Opcode.CMSG_QUEST_GIVER_STATUS_QUERY)]
     void HandleQuestGiverStatusQuery(QuestGiverStatusQuery query)

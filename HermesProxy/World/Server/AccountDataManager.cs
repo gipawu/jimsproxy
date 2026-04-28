@@ -16,6 +16,11 @@ public class AccountMetaDataManager
     private const string LAST_CHARACTER_FILE = "last_character.txt";
     private const string COMPLETED_QUESTS_FILE = "completed_quests.csv";
     private const string SETTINGS_FILE = "settings.json";
+    //MIRASU - per-character disk persistence for quest item running totals so the modern over-head
+    //MIRASU   quest toast survives a full proxy restart (close-game-then-relaunch, or crash). The
+    //MIRASU   in-memory snapshot in GlobalSessionData covers logout-to-charselect-relog where the
+    //MIRASU   proxy stays alive; this disk file is the persistent backstop for the harder case.
+    private const string QUEST_ITEM_PROGRESS_FILE = "quest-item-progress.json";
 
     private readonly string _accountName;
 
@@ -143,6 +148,84 @@ public class AccountMetaDataManager
 
         return loadedJson!;
     }
+
+    //MIRASU - serializes concurrent calls to SaveQuestItemProgress so the temp-file/rename pair
+    //MIRASU   isn't interleaved between the WorldClient thread (item credit) and the server thread
+    //MIRASU   (abandon-clear). One static lock per process is fine: file I/O is fast and contention
+    //MIRASU   is low (only this character's session writes through here per proxy instance).
+    private static readonly object _questItemProgressFileLock = new();
+
+    //MIRASU - persist quest item running totals to disk for this character. Atomic write via
+    //MIRASU   temp-file + rename so a crash mid-write can't corrupt the file. Called eagerly from
+    //MIRASU   GlobalSessionData on every pickup increment and on COMPLETE/FAILED/abandon so the
+    //MIRASU   disk file always reflects the latest state -- the proxy can be killed mid-session
+    //MIRASU   (launcher kill on game close) and the next start sees an up-to-date file.
+    public void SaveQuestItemProgress(string realmName, string charName, IEnumerable<KeyValuePair<(uint QuestID, sbyte StorageIndex), uint>> entries)
+    {
+        var dir = GetAccountCharacterMetaDataDirectory(realmName, charName);
+        var path = Path.Combine(dir, QUEST_ITEM_PROGRESS_FILE);
+        var tmp = path + ".tmp";
+
+        var dto = new QuestItemProgressFile
+        {
+            SchemaVersion = 1,
+            Entries = entries.Select(kvp => new QuestItemProgressEntry
+            {
+                QuestId = kvp.Key.QuestID,
+                StorageIndex = kvp.Key.StorageIndex,
+                Count = kvp.Value,
+            }).ToList(),
+        };
+        var jsonString = JsonSerializer.Serialize(dto, new JsonSerializerOptions { WriteIndented = true });
+        lock (_questItemProgressFileLock)
+        {
+            File.WriteAllText(tmp, jsonString, Encoding.UTF8);
+            File.Move(tmp, path, overwrite: true);
+        }
+    }
+
+    //MIRASU - load quest item running totals from disk for this character. Returns null if no
+    //MIRASU   file exists or the file is corrupt / from a future schema; caller treats null as
+    //MIRASU   "no saved progress" (which is also the cold-start state).
+    public Dictionary<(uint QuestID, sbyte StorageIndex), uint>? LoadQuestItemProgress(string realmName, string charName)
+    {
+        var dir = GetAccountCharacterMetaDataDirectory(realmName, charName);
+        var path = Path.Combine(dir, QUEST_ITEM_PROGRESS_FILE);
+        if (!File.Exists(path))
+            return null;
+
+        try
+        {
+            var jsonString = File.ReadAllText(path, Encoding.UTF8);
+            var dto = JsonSerializer.Deserialize<QuestItemProgressFile>(jsonString);
+            if (dto == null || dto.SchemaVersion != 1)
+                return null;
+            var result = new Dictionary<(uint QuestID, sbyte StorageIndex), uint>(dto.Entries.Count);
+            foreach (var entry in dto.Entries)
+                result[(entry.QuestId, entry.StorageIndex)] = entry.Count;
+            return result;
+        }
+        catch (Exception ex)
+        {
+            Log.Print(LogType.Error, $"Failed to load quest item progress for '{charName}@{realmName}': {ex.Message}");
+            return null;
+        }
+    }
+}
+
+//MIRASU - DTOs for quest item progress disk persistence. Kept as a flat list rather than a dict
+//MIRASU   because System.Text.Json doesn't natively serialize tuple-keyed dictionaries.
+public class QuestItemProgressFile
+{
+    public int SchemaVersion { get; set; }
+    public List<QuestItemProgressEntry> Entries { get; set; } = new();
+}
+
+public class QuestItemProgressEntry
+{
+    public uint QuestId { get; set; }
+    public sbyte StorageIndex { get; set; }
+    public uint Count { get; set; }
 }
 
 public class AccountData

@@ -5,6 +5,7 @@ using HermesProxy.World.Enums;
 using HermesProxy.World.Objects;
 using HermesProxy.World.Server.Packets;
 using System;
+using System.Collections.Generic;
 using System.Linq;
 
 namespace HermesProxy.World.Client;
@@ -400,12 +401,57 @@ public partial class WorldClient
         //MIRASU   stale counts. Applies to COMPLETE / FAILED / FAILED_TIMER -- in all three cases
         //MIRASU   the quest is leaving the active log and any running total is no longer valid.
         //MIRASU   Clear from the saved snapshot too, so a logout/login can't restore stale entries.
+        //MIRASU   ConcurrentDictionary's TryRemove is the atomic equivalent of Dictionary.Remove.
         var progressMap = GetSession().GameState.QuestItemObjectiveProgress;
         foreach (var k in progressMap.Keys.Where(k => k.QuestID == quest.QuestID).ToList())
-            progressMap.Remove(k);
+            progressMap.TryRemove(k, out _);
         if (GetSession().SavedQuestItemProgressByCharacter.TryGetValue(GetSession().GameState.CurrentPlayerGuid, out var savedForPlayer))
             foreach (var k in savedForPlayer.Keys.Where(k => k.QuestID == quest.QuestID).ToList())
-                savedForPlayer.Remove(k);
+                savedForPlayer.TryRemove(k, out _);
+        //MIRASU - persist the post-clear saved snapshot to disk so a crash before next graceful
+        //MIRASU   logout can't restore a stale entry for the just-completed/failed quest on the
+        //MIRASU   next proxy start.
+        GetSession().PersistQuestItemProgressForCurrentPlayer();
+        //MIRASU - drop pending buffered credits whose itemId matches an item-objective in the
+        //MIRASU   ending quest's template, so a deferred ReplayPendingQuestItemCredits can't
+        //MIRASU   misattribute the count to a re-accept (or another active quest sharing the
+        //MIRASU   item). If the template isn't cached we conservatively skip -- that means the
+        //MIRASU   pending entry was for a quest the proxy never learned about, so attribution
+        //MIRASU   is already ambiguous and dropping would be guesswork.
+        DropPendingQuestItemCreditsForQuest(quest.QuestID);
+    }
+
+    //MIRASU - shared helper: removes any (itemId, count) pending entries whose item appears in the
+    //MIRASU   given quest's item-objectives. Lock-protected because callers run on different threads
+    //MIRASU   (client thread for COMPLETE/FAILED/replay, server thread for abandon).
+    public void DropPendingQuestItemCreditsForQuest(uint questId)
+    {
+        var template = GameData.GetQuestTemplate(questId);
+        if (template == null)
+            return;
+        var itemIds = new HashSet<uint>();
+        foreach (var obj in template.Objectives)
+        {
+            if (obj.Type == QuestObjectiveType.Item)
+                itemIds.Add((uint)obj.ObjectID);
+        }
+        if (itemIds.Count == 0)
+            return;
+
+        int removed;
+        lock (GetSession().GameState.PendingQuestItemCreditsLock)
+        {
+            removed = GetSession().GameState.PendingQuestItemCredits.RemoveAll(p => itemIds.Contains(p.ItemId));
+        }
+        if (removed > 0)
+        {
+            Log.Event("quest.item.pending.dropped", new
+            {
+                quest_id = questId,
+                item_ids = itemIds.ToArray(),
+                removed,
+            });
+        }
     }
     [PacketHandler(Opcode.SMSG_QUEST_UPDATE_ADD_ITEM)]
     void HandleQuestUpdateAddItem(WorldPacket packet)
@@ -421,12 +467,17 @@ public partial class WorldClient
         //MIRASU   is permanently off-by-one for the first pickup of any unfamiliar quest item, since
         //MIRASU   the legacy server only sends the credit packet once per pickup. Then fire the
         //MIRASU   template queries (modeled on the original "Next pickup will find it" path).
-        GetSession().GameState.PendingQuestItemCredits.Add((itemId, count));
+        int pendingCount;
+        lock (GetSession().GameState.PendingQuestItemCreditsLock)
+        {
+            GetSession().GameState.PendingQuestItemCredits.Add((itemId, count));
+            pendingCount = GetSession().GameState.PendingQuestItemCredits.Count;
+        }
         Log.Event("quest.item.add.buffered", new
         {
             item_id = itemId,
             wire_count = count,
-            pending_count = GetSession().GameState.PendingQuestItemCredits.Count,
+            pending_count = pendingCount,
         });
 
         var pendingFields = GetSession().GameState.GetCachedObjectFieldsLegacy(GetSession().GameState.CurrentPlayerGuid);
@@ -453,16 +504,28 @@ public partial class WorldClient
     //MIRASU   quest) so it'll be tried again on the next QueryQuestInfoResponse.
     public void ReplayPendingQuestItemCredits()
     {
-        var pending = GetSession().GameState.PendingQuestItemCredits;
-        if (pending.Count == 0)
-            return;
-
-        var snapshot = pending.ToList();
-        pending.Clear();
+        var gameState = GetSession().GameState;
+        //MIRASU - drain under lock to avoid racing with abandon-clear (server thread) or
+        //MIRASU   another buffered Add (client thread). Replay processing then runs without
+        //MIRASU   the lock so ProcessQuestItemCredit doesn't have to be lock-aware.
+        List<(uint ItemId, uint Count)> snapshot;
+        lock (gameState.PendingQuestItemCreditsLock)
+        {
+            if (gameState.PendingQuestItemCredits.Count == 0)
+                return;
+            snapshot = new List<(uint, uint)>(gameState.PendingQuestItemCredits);
+            gameState.PendingQuestItemCredits.Clear();
+        }
+        var unresolved = new List<(uint ItemId, uint Count)>();
         foreach (var (itemId, count) in snapshot)
         {
             if (!ProcessQuestItemCredit(itemId, count, replayed: true))
-                pending.Add((itemId, count));
+                unresolved.Add((itemId, count));
+        }
+        if (unresolved.Count > 0)
+        {
+            lock (gameState.PendingQuestItemCreditsLock)
+                gameState.PendingQuestItemCredits.AddRange(unresolved);
         }
     }
 
@@ -568,6 +631,14 @@ public partial class WorldClient
         credit.Required = (ushort)objective.Amount;
         credit.VictimGUID = default; //MIRASU - no victim for item pickups; modern client ignores VictimGUID for Item objectives
         SendPacketToClient(credit);
+
+        //MIRASU - eager disk persist: write the latest running totals to disk after every credit so
+        //MIRASU   a launcher-induced proxy kill (close-game-on-logout option) can't lose progress.
+        //MIRASU   The previous batched-on-logout model only worked when SMSG_LOGOUT_COMPLETE arrived
+        //MIRASU   before the proxy died, which doesn't happen when the launcher kills mid-session.
+        //MIRASU   SnapshotQuestItemProgressForRestore copies live -> SavedQuestItemProgressByCharacter
+        //MIRASU   AND writes to disk in one call. Cost is ~one tiny JSON file write per pickup.
+        GetSession().SnapshotQuestItemProgressForRestore();
         return true;
     }
 
