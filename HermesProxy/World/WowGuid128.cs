@@ -93,15 +93,19 @@ public readonly record struct WowGuid128(ulong Low, ulong High)
         return new WowGuid128(counter, (ulong)type << 58);
     }
 
+    // Transport GUID layout: [63-58] type (6 bits), [57-38] counter (20 bits), [37-0] entry.
+    // Counter must be masked to 20 bits — overflow corrupts the type field and the
+    // modern client disconnects on the malformed GUID. Fixes elevator/zeppelin/tram DCs
+    // (upstream #121, #187, #190). Confirmed trigger: Gnomeregan elevator on Kronos.
     static WowGuid128 TransportCreate(ulong counter, uint entry)
     {
-        return new WowGuid128(0, (ulong)HighGuidType703.Transport << 58 | (counter << 38) | entry);
+        return new WowGuid128(0, (ulong)HighGuidType703.Transport << 58 | ((counter & 0xFFFFF) << 38) | entry);
     }
 
     static WowGuid128 RealmSpecificCreate(HighGuidType703 type, ulong counter)
     {
         if (type == HighGuidType703.Transport)
-            return new WowGuid128(0, (ulong)type << 58 | (counter << 38));
+            return new WowGuid128(0, (ulong)type << 58 | ((counter & 0xFFFFF) << 38));
         else
             return new WowGuid128(counter, (ulong)type << 58 | (ulong)1 /*realmId*/ << 42);
     }
