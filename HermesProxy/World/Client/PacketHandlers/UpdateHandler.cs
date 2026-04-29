@@ -1946,6 +1946,8 @@ public partial class WorldClient
             if (UNIT_FIELD_PETNUMBER >= 0 && updateMaskArray[UNIT_FIELD_PETNUMBER])
             {
                 updateData.UnitData.PetNumber = updates[UNIT_FIELD_PETNUMBER].UInt32Value;
+                if (guid.GetHighType() == HighGuidType.Pet && updateData.UnitData.PetNumber != 0)
+                    GetSession().GameState.CachedPetNumbers[(uint)updateData.UnitData.PetNumber] = guid;
             }
             int UNIT_FIELD_PET_NAME_TIMESTAMP = LegacyVersion.GetUpdateField(UnitField.UNIT_FIELD_PET_NAME_TIMESTAMP);
             if (UNIT_FIELD_PET_NAME_TIMESTAMP >= 0 && updateMaskArray[UNIT_FIELD_PET_NAME_TIMESTAMP])

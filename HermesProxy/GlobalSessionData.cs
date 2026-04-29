@@ -86,6 +86,7 @@ public sealed class GameSessionData
     // name and errors. This cache stickies the first successful family lookup
     // so we always send a valid family, cleared only on explicit pet dismiss.
     public ConcurrentDictionary<WowGuid128, ushort> CachedPetCreatureFamily = new();
+    public Dictionary<uint, WowGuid128> CachedPetNumbers = new();
     public string LeftChannelName = "";
     public bool IsPassingOnLoot;
     public int GroupUpdateCounter;
@@ -1043,6 +1044,9 @@ public sealed class GameSessionData
     }
     public WowGuid128 GetPetGuidByNumber(uint petNumber)
     {
+        if (CachedPetNumbers.TryGetValue(petNumber, out var cached))
+            return cached;
+
         lock (ObjectCacheLock)
         {
             foreach (var itr in ObjectCacheModern)
@@ -1050,6 +1054,7 @@ public sealed class GameSessionData
                 if (itr.Key.GetHighType() == HighGuidType.Pet &&
                     itr.Key.GetEntry() == petNumber)
                 {
+                    CachedPetNumbers[petNumber] = itr.Key;
                     return itr.Key;
                 }
             }
