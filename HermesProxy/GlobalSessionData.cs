@@ -11,6 +11,7 @@ using System.Runtime.InteropServices;
 using System.Linq;
 using System.Text;
 using System.Threading;
+using Framework.Logging;
 using Framework.Realm;
 using HermesProxy.World.Server.Packets;
 using ArenaTeamInspectData = HermesProxy.World.Server.Packets.ArenaTeamInspectData;
@@ -141,7 +142,17 @@ public sealed class GameSessionData
     // MSG_CHANNEL_START to the caster, not to nearby players).
     public ConcurrentDictionary<WowGuid128, int> UnitChannelSpells = new();
     public WowGuid64 LastLootTargetGuid;
-    public Dictionary<(uint QuestID, sbyte StorageIndex), uint> QuestItemObjectiveProgress = new(); //MIRASU - proxy-local running totals for quest item pickups; legacy update-field cache isn't refreshed on partial updates, so we track ourselves
+    //MIRASU - ConcurrentDictionary because abandon-clear runs on the modern-server thread
+    //MIRASU   (CMSG_QUEST_LOG_REMOVE_QUEST handler in Server/QuestHandler.cs) while item-credit
+    //MIRASU   reads/writes and COMPLETE/FAILED clears run on the WorldClient thread. Plain
+    //MIRASU   Dictionary risks torn-state corruption on cross-thread enumeration.
+    public ConcurrentDictionary<(uint QuestID, sbyte StorageIndex), uint> QuestItemObjectiveProgress = new();
+    //MIRASU - PendingQuestItemCredits is a List (no concurrent equivalent supports predicate-remove).
+    //MIRASU   Guard with PendingQuestItemCreditsLock for cross-thread safety. Cleared on
+    //MIRASU   COMPLETE/FAILED/abandon for the affected quest's item objectives so a stale buffered
+    //MIRASU   credit can't be replayed against a re-accept (or a different quest sharing the item).
+    public List<(uint ItemId, uint Count)> PendingQuestItemCredits = new();
+    public readonly object PendingQuestItemCreditsLock = new();
     public uint CurrentLootCoins; //MIRASU - remembers coin amount from SMSG_LOOT_RESPONSE so proxy can synthesize SMSG_LOOT_MONEY_NOTIFY when client picks up gold (Kronos/TC-1.12 doesn't emit it)
     public List<WowGuid128>? MasterLootCandidates;
     public WowGuid64 LastMasterLootSentTarget;
@@ -1251,7 +1262,28 @@ public class GlobalSessionData
     public string OS = null!;
     public uint Build;
     public GameSessionData GameState;
-    
+
+    //MIRASU - GameState gets recreated on SMSG_LOGOUT_COMPLETE (CharacterHandler.HandleLogoutComplete)
+    //MIRASU   which wipes QuestItemObjectiveProgress. To preserve quest item running totals across a
+    //MIRASU   logout-to-charselect-relog flow, we snapshot the dict here keyed by character guid before
+    //MIRASU   the reset, and restore lazily on first item pickup post-relog if the new CurrentPlayerGuid
+    //MIRASU   matches. Char-switch (Char A → Char B) is handled naturally by the per-character key.
+    //MIRASU - ConcurrentDictionary (outer + inner) because the saved snapshot is mutated from
+    //MIRASU   both the modern-server thread (abandon-clear in Server/QuestHandler.cs) and the
+    //MIRASU   WorldClient thread (snapshot/restore + COMPLETE-clear in Client/QuestHandler.cs).
+    public ConcurrentDictionary<WowGuid128, ConcurrentDictionary<(uint QuestID, sbyte StorageIndex), uint>> SavedQuestItemProgressByCharacter = new();
+    //MIRASU - track restore by GameSessionData *instance* (reference equality), not by playerGuid.
+    //MIRASU   Logging out and back in to the SAME character produces a fresh GameSessionData with the
+    //MIRASU   same CurrentPlayerGuid; a guid-based guard would skip the restore on relog and the
+    //MIRASU   running totals would be lost. New GameState reference => restore runs once.
+    //MIRASU   volatile gives us a memory barrier on read/write so a future caller off the WorldClient
+    //MIRASU   thread can't see a stale reference.
+    private volatile GameSessionData? _lastRestoredForGameState;
+
+    private Timer? _questProgressDiskTimer;
+    private volatile bool _questProgressDiskDirty;
+    private const int QuestProgressDiskDebounceMs = 5_000;
+
     public RealmId RealmId;
     public RealmManager RealmManager = new();
     public Realm? Realm => RealmManager.GetRealm(RealmId);
@@ -1327,6 +1359,207 @@ public class GlobalSessionData
             return WowGuid128.Create(HighGuidType703.BNetAccount, playerGuid.GetCounter());
     }
 
+    //MIRASU - capture the current player's QuestItemObjectiveProgress before GameState is wiped,
+    //MIRASU   so we can restore it on re-login (logout-to-charselect-relog flow). Called from
+    //MIRASU   HandleLogoutComplete BEFORE the GameState reassignment, while CurrentPlayerGuid is
+    //MIRASU   still pointed at the outgoing character. Idempotent on default/empty guid (no-op).
+    //MIRASU   In-memory snapshot is always immediate. Disk persistence is debounced (5s) so
+    //MIRASU   rapid quest item pickups collapse into a single write. Logout/disconnect paths
+    //MIRASU   call FlushQuestItemProgressToDisk() for an immediate flush.
+    public void SnapshotQuestItemProgressForRestore()
+    {
+        var guid = GameState.CurrentPlayerGuid;
+        if (guid == default)
+            return;
+
+        var live = GameState.QuestItemObjectiveProgress;
+        //MIRASU - copy into a fresh ConcurrentDictionary so subsequent abandon-clears on the saved
+        //MIRASU   inner dict are thread-safe. The seed copy from `live` is itself a CDict snapshot
+        //MIRASU   (weakly-consistent enumeration, safe under concurrent writes).
+        var snapshot = new ConcurrentDictionary<(uint QuestID, sbyte StorageIndex), uint>(live);
+        SavedQuestItemProgressByCharacter[guid] = snapshot;
+
+        _questProgressDiskDirty = true;
+        _questProgressDiskTimer?.Change(QuestProgressDiskDebounceMs, Timeout.Infinite);
+        if (_questProgressDiskTimer == null)
+            _questProgressDiskTimer = new Timer(_ => DebouncedPersistQuestItemProgress(), null, QuestProgressDiskDebounceMs, Timeout.Infinite);
+
+        Framework.Logging.Log.Event("quest.progress.snapshot", new
+        {
+            player_guid_low = guid.Low,
+            player_guid_high = guid.High,
+            entries = live.Count,
+            persisted = false,
+            debounced = true,
+        });
+    }
+
+    private void DebouncedPersistQuestItemProgress()
+    {
+        if (!_questProgressDiskDirty)
+            return;
+        _questProgressDiskDirty = false;
+
+        var guid = GameState?.CurrentPlayerGuid ?? default;
+        if (guid == default)
+            return;
+
+        if (SavedQuestItemProgressByCharacter.TryGetValue(guid, out var snapshot))
+            TryPersistQuestItemProgressToDisk(guid, snapshot);
+    }
+
+    public void FlushQuestItemProgressToDisk()
+    {
+        _questProgressDiskTimer?.Change(Timeout.Infinite, Timeout.Infinite);
+
+        if (!_questProgressDiskDirty)
+            return;
+        _questProgressDiskDirty = false;
+
+        var guid = GameState?.CurrentPlayerGuid ?? default;
+        if (guid == default)
+            return;
+
+        if (SavedQuestItemProgressByCharacter.TryGetValue(guid, out var snapshot))
+        {
+            bool persisted = TryPersistQuestItemProgressToDisk(guid, snapshot);
+            Framework.Logging.Log.Event("quest.progress.flush", new
+            {
+                player_guid_low = guid.Low,
+                player_guid_high = guid.High,
+                entries = snapshot.Count,
+                persisted,
+            });
+        }
+    }
+
+    //MIRASU - public entry point for the QuestHandler clear paths (COMPLETE/FAILED/abandon) so the
+    //MIRASU   on-disk file stays consistent with the in-memory saved snapshot. Without this, a
+    //MIRASU   crash between an abandon and the next graceful logout would leave stale entries on
+    //MIRASU   disk that get restored on the next session and credited against a re-accept.
+    //MIRASU   Uses the debounced disk path — abandon/COMPLETE aren't as latency-sensitive as
+    //MIRASU   disconnect, and the next graceful logout or disconnect flushes immediately anyway.
+    public void PersistQuestItemProgressForCurrentPlayer()
+    {
+        var guid = GameState.CurrentPlayerGuid;
+        if (guid == default)
+            return;
+        if (!SavedQuestItemProgressByCharacter.TryGetValue(guid, out var saved))
+            saved = new ConcurrentDictionary<(uint QuestID, sbyte StorageIndex), uint>();
+        SavedQuestItemProgressByCharacter[guid] = saved;
+        _questProgressDiskDirty = true;
+        _questProgressDiskTimer?.Change(QuestProgressDiskDebounceMs, Timeout.Infinite);
+        if (_questProgressDiskTimer == null)
+            _questProgressDiskTimer = new Timer(_ => DebouncedPersistQuestItemProgress(), null, QuestProgressDiskDebounceMs, Timeout.Infinite);
+    }
+
+    //MIRASU - resolves realm + character name from OwnCharacters, then writes via AccountMetaDataMgr.
+    //MIRASU   Returns false (with a log line) if any prerequisite is missing rather than throwing,
+    //MIRASU   so a transient init-order issue doesn't tear down logout/disconnect cleanup.
+    private bool TryPersistQuestItemProgressToDisk(WowGuid128 guid, ConcurrentDictionary<(uint QuestID, sbyte StorageIndex), uint> entries)
+    {
+        if (AccountMetaDataMgr == null)
+            return false;
+        var charInfo = GameState.OwnCharacters.FirstOrDefault(c => c.CharacterGuid == guid);
+        if (charInfo == null || string.IsNullOrEmpty(charInfo.Name) || charInfo.Realm == null || string.IsNullOrEmpty(charInfo.Realm.Name))
+            return false;
+
+        try
+        {
+            AccountMetaDataMgr.SaveQuestItemProgress(charInfo.Realm.Name, charInfo.Name, entries);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Framework.Logging.Log.Print(LogType.Error, $"Failed to persist quest item progress for '{charInfo.Name}@{charInfo.Realm.Name}': {ex.Message}");
+            return false;
+        }
+    }
+
+    //MIRASU - lazy-load disk-persisted progress into SavedQuestItemProgressByCharacter on the first
+    //MIRASU   restore-attempt of a session. Returns true if anything was loaded. Stale entries for
+    //MIRASU   quests no longer in the player's quest log get pruned by a subsequent abandon/COMPLETE
+    //MIRASU   path -- here we just trust the disk file (it was last written by a previous logout or
+    //MIRASU   a quest-clear, so it should already be consistent absent a crash mid-session).
+    private bool TryLoadQuestItemProgressFromDisk(WowGuid128 guid)
+    {
+        if (AccountMetaDataMgr == null)
+            return false;
+        var charInfo = GameState.OwnCharacters.FirstOrDefault(c => c.CharacterGuid == guid);
+        if (charInfo == null || string.IsNullOrEmpty(charInfo.Name) || charInfo.Realm == null || string.IsNullOrEmpty(charInfo.Realm.Name))
+            return false;
+
+        var loaded = AccountMetaDataMgr.LoadQuestItemProgress(charInfo.Realm.Name, charInfo.Name);
+        if (loaded == null || loaded.Count == 0)
+            return false;
+
+        var inner = new ConcurrentDictionary<(uint QuestID, sbyte StorageIndex), uint>(loaded);
+        SavedQuestItemProgressByCharacter[guid] = inner;
+
+        Framework.Logging.Log.Event("quest.progress.disk.loaded", new
+        {
+            player_guid_low = guid.Low,
+            player_guid_high = guid.High,
+            char_name = charInfo.Name,
+            realm = charInfo.Realm.Name,
+            entries = loaded.Count,
+        });
+        return true;
+    }
+
+    //MIRASU - restore saved QuestItemObjectiveProgress entries for the current player on first call
+    //MIRASU   per (player, GameState) combination. Called from ProcessQuestItemCredit at the top of
+    //MIRASU   the live-pickup path so the very first item credit post-relog sees the running total
+    //MIRASU   from before the logout. After restore the live dict is authoritative -- subsequent
+    //MIRASU   abandon/COMPLETE clears (which already touch live + saved) keep both in sync.
+    public void EnsureQuestItemProgressRestored()
+    {
+        var guid = GameState.CurrentPlayerGuid;
+        //MIRASU - reference-equality on the GameSessionData instance is intentional: a relog
+        //MIRASU   produces a fresh GameState reference even when the playerGuid is identical,
+        //MIRASU   which is how we detect "first item credit of a new session" reliably.
+        if (guid == default || ReferenceEquals(_lastRestoredForGameState, GameState))
+            return;
+
+        _lastRestoredForGameState = GameState;
+        //MIRASU - if no in-memory snapshot exists for this player yet (cold proxy start, or first
+        //MIRASU   session for this character), try the on-disk file. Disk persistence is what makes
+        //MIRASU   the toast survive a full proxy restart -- the in-memory dict is empty after restart.
+        if (!SavedQuestItemProgressByCharacter.ContainsKey(guid))
+            TryLoadQuestItemProgressFromDisk(guid);
+
+        if (!SavedQuestItemProgressByCharacter.TryGetValue(guid, out var saved) || saved.Count == 0)
+        {
+            Framework.Logging.Log.Event("quest.progress.restore.empty", new
+            {
+                player_guid_low = guid.Low,
+                player_guid_high = guid.High,
+                saved_characters = SavedQuestItemProgressByCharacter.Count,
+            });
+            return;
+        }
+
+        var live = GameState.QuestItemObjectiveProgress;
+        int restored = 0;
+        foreach (var kvp in saved)
+        {
+            //MIRASU - don't clobber an entry the new GameState already saw (e.g. an SMSG_QUEST_UPDATE_ADD_ITEM
+            //MIRASU   that arrived before this restore call would have populated it -- shouldn't happen because
+            //MIRASU   restore runs at the top of ProcessQuestItemCredit, but defend anyway). TryAdd is the
+            //MIRASU   atomic equivalent on ConcurrentDictionary.
+            if (live.TryAdd(kvp.Key, kvp.Value))
+                restored++;
+        }
+
+        Framework.Logging.Log.Event("quest.progress.restored", new
+        {
+            player_guid_low = guid.Low,
+            player_guid_high = guid.High,
+            saved_entries = saved.Count,
+            restored_entries = restored,
+        });
+    }
+
     public void OnDisconnect()
     {
         // JimsProxy: structured session.disconnect — emitted once per cleanup with snapshot
@@ -1343,6 +1576,16 @@ public class GlobalSessionData
         // JimsProxy (issue #43): cancel any held GCD cast and dispose its timer so it can't
         // fire after InstanceSocket has been torn down.
         GameState?.CancelGcdHold();
+
+        //MIRASU - capture quest item running totals before GameState is recreated so an unexpected
+        //MIRASU   network disconnect followed by reconnect-to-same-character preserves the toast
+        //MIRASU   total, mirroring the graceful logout-to-charselect path. Without this, a Wi-Fi
+        //MIRASU   blip resets the quest toast to "1/N" on the next pickup post-reconnect.
+        if (GameState != null)
+        {
+            SnapshotQuestItemProgressForRestore();
+            FlushQuestItemProgressToDisk();
+        }
 
         if (ModernSniff != null)
         {
