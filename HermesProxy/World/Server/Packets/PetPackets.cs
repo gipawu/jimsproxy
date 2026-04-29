@@ -464,6 +464,22 @@ class PetCancelAura : ClientPacket
     public uint SpellID;
 }
 
+class PetSpellAutocast : ClientPacket
+{
+    public PetSpellAutocast(WorldPacket packet) : base(packet) { }
+
+    public override void Read()
+    {
+        PetGUID = _worldPacket.ReadPackedGuid128();
+        SpellID = _worldPacket.ReadUInt32();
+        AutocastEnabled = _worldPacket.ReadBool();
+    }
+
+    public WowGuid128 PetGUID;
+    public uint SpellID;
+    public bool AutocastEnabled;
+}
+
 class PetInfoRequest : ClientPacket
 {
     public PetInfoRequest(WorldPacket packet) : base(packet) { }

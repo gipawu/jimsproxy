@@ -106,6 +106,16 @@ public partial class WorldSocket
         SendPacketToServer(packet);
     }
 
+    [PacketHandler(Opcode.CMSG_PET_SPELL_AUTOCAST)]
+    void HandlePetSpellAutocast(PetSpellAutocast autocast)
+    {
+        WorldPacket packet = new WorldPacket(Opcode.CMSG_PET_SPELL_AUTOCAST);
+        packet.WriteGuid(autocast.PetGUID.To64());
+        packet.WriteUInt32(autocast.SpellID);
+        packet.WriteUInt8((byte)(autocast.AutocastEnabled ? 1 : 0));
+        SendPacketToServer(packet);
+    }
+
     [PacketHandler(Opcode.CMSG_PET_CANCEL_AURA)]
     void HandlePetCancelAura(PetCancelAura cancel)
     {
