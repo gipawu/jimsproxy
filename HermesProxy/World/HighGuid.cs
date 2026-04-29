@@ -27,6 +27,7 @@ public class HighGuidLegacy : HighGuid
         { HighGuidTypeLegacy.Group2, HighGuidType.RaidGroup },
         { HighGuidTypeLegacy.MOTransport, HighGuidType.MOTransport }, // ?? unused in wpp
         { HighGuidTypeLegacy.Item, HighGuidType.Item },
+        { HighGuidTypeLegacy.ItemContainer, HighGuidType.Item },
         { HighGuidTypeLegacy.DynamicObject, HighGuidType.DynamicObject },
         { HighGuidTypeLegacy.GameObject, HighGuidType.GameObject },
         { HighGuidTypeLegacy.Transport, HighGuidType.Transport },
@@ -39,10 +40,17 @@ public class HighGuidLegacy : HighGuid
     public HighGuidLegacy(HighGuidTypeLegacy high)
     {
         this.high = high;
-        if (!HighLegacyToHighType.ContainsKey(high))
-            throw new ArgumentOutOfRangeException("0x" + high.ToString("X"));
-
-        highGuidType = HighLegacyToHighType[high];
+        if (!HighLegacyToHighType.TryGetValue(high, out highGuidType))
+        {
+            Framework.Logging.Log.Print(Framework.Logging.LogType.Warn,
+                $"[HighGuidLegacy] Unknown legacy high-guid 0x{(uint)high:X4} — treating as Null.");
+            Framework.Logging.Log.Event("guid.legacy.unknown", new
+            {
+                high_guid_raw = (uint)high,
+                high_guid_hex = $"0x{(uint)high:X4}",
+            });
+            highGuidType = HighGuidType.Null;
+        }
     }
 }
 
