@@ -60,7 +60,7 @@ public static class Settings
         // JimsProxy: structured logging defaults on; toggle VerboseLog to enable per-packet Verbose console output
         StructuredLog = config.GetBoolean("StructuredLog", true);
         VerboseLog = config.GetBoolean("VerboseLog", false);
-        SpellCastEarlyFireOffsetMs = Math.Clamp(config.GetInt("SpellCastEarlyFireOffsetMs", 0), 0, 50);
+        SpellCastEarlyFireOffsetMs = Math.Clamp(config.GetInt("SpellCastEarlyFireOffsetMs", 0), 0, 100);
         Log.StructuredLogEnabled = StructuredLog;
         Log.VerboseLogEnabled = VerboseLog;
         // Open the JSONL file now so session.start's payload can include the full path.
