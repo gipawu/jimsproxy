@@ -300,7 +300,6 @@ public partial class WorldSocket : SocketBase, BnetServices.INetwork
                 if (_connectType == ConnectionType.Realm && GetSession().WorldClient != null && GetSession().WorldClient!.IsConnected() && GetSession().WorldClient!.IsAuthenticated())
                 {
                     GetSession().WorldClient!.SendPing(ping.Serial, ping.Latency);
-                    GetSession().GameState?.RecordPingSent(ping.Serial);
                 }
                 else
                     HandlePing(ping);

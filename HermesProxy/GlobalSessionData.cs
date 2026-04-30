@@ -788,7 +788,6 @@ public sealed class GameSessionData
 
     public void RecordPingSent(uint serial)
     {
-        if ((serial & 0x80000000) != 0) return;
         lock (_rttLock)
         {
             _lastPingSerial = serial;
@@ -798,7 +797,6 @@ public sealed class GameSessionData
 
     public void RecordPongReceived(uint serial)
     {
-        if ((serial & 0x80000000) != 0) return;
         lock (_rttLock)
         {
             if (serial != _lastPingSerial || _lastPingSendTickMs == 0) return;
