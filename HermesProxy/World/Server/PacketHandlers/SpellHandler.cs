@@ -140,6 +140,42 @@ public partial class WorldSocket
             });
         }
 
+        // JimsProxy (Rupture-DoT-Lingering-Icon): snapshot CP for vanilla CP-scaling
+        // finishers before the server consumes them. The legacy server applies
+        // (base + perCp × CP) ms duration server-side and never echoes it back for enemy
+        // debuffs, so the proxy synthesizes the correct duration locally on aura apply.
+        // Snapshotting on the keypress (before any GCD-hold path) covers both immediate
+        // forwards and held-then-released casts. TTL on the lookup side bounds staleness.
+        uint castSpellId = (uint)cast.Cast.SpellID;
+        if (GameData.IsComboPointFinisher(castSpellId))
+        {
+            byte cp = GetSession().GameState.CurrentComboPoints;
+            WowGuid128 target = cast.Cast.Target.Unit;
+            bool targetEmpty = target.IsEmpty();
+            // Unconditional diagnostic so we can see which guard failed when no snapshot fires.
+            Log.Event("finisher.cmsg_cast", new
+            {
+                spell_id = castSpellId,
+                combo_points = cp,
+                target_low = targetEmpty ? 0 : target.GetCounter(),
+                target_empty = targetEmpty,
+                target_flags = (uint)cast.Cast.Target.Flags,
+                cached_combo_target_low = GetSession().GameState.CurrentComboTarget.IsEmpty()
+                    ? 0
+                    : GetSession().GameState.CurrentComboTarget.GetCounter(),
+            });
+            if (cp > 0 && !targetEmpty)
+            {
+                GetSession().GameState.StorePendingFinisherCast(castSpellId, target, cp);
+                Log.Event("finisher.snapshot", new
+                {
+                    spell_id = castSpellId,
+                    target_low = target.GetCounter(),
+                    combo_points = cp,
+                });
+            }
+        }
+
         bool isNextMelee = GameData.NextMeleeSpells.Contains(cast.Cast.SpellID);
         bool isAutoRepeat = GameData.AutoRepeatSpells.Contains(cast.Cast.SpellID);
         // JimsProxy (issue #43): the GCD hold-and-fire path is vanilla-only. On TBC+ the

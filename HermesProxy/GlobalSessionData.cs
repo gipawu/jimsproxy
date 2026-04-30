@@ -162,6 +162,17 @@ public sealed class GameSessionData
     public Dictionary<WowGuid128, Dictionary<byte, int>> UnitAuraDurationLeft = [];
     public Dictionary<WowGuid128, Dictionary<byte, int>> UnitAuraDurationFull = [];
     public Dictionary<WowGuid128, Dictionary<byte, WowGuid128>> UnitAuraCaster = [];
+
+    // JimsProxy (Rupture-DoT-Lingering-Icon): combo-point cache + finisher-cast snapshot.
+    // Vanilla servers don't send aura duration for enemy debuffs, and CP-scaling finishers
+    // (Rupture, Kidney Shot) compute their duration server-side as (base + perCp × CP).
+    // We cache CP from SMSG_UPDATE_COMBO_POINTS and snapshot it on the outgoing
+    // CMSG_CAST_SPELL — at that moment the server hasn't consumed CP yet, so the cached
+    // value is the real CP that will be applied. Aura-apply paths consult the snapshot to
+    // synthesize the correct duration locally before the legacy server clears the CP.
+    public byte CurrentComboPoints;
+    public WowGuid128 CurrentComboTarget;
+    private (uint SpellId, WowGuid128 Target, byte ComboPoints, int Tick)? _pendingFinisherCast;
     public Dictionary<WowGuid128, PlayerCache> CachedPlayers = [];
     public HashSet<WowGuid128> IgnoredPlayers = [];
     public Dictionary<WowGuid128, uint> PlayerGuildIds = [];
@@ -621,6 +632,34 @@ public sealed class GameSessionData
         ref var dict = ref CollectionsMarshal.GetValueRefOrAddDefault(LastAuraCasterOnTarget, target, out _);
         dict ??= [];
         dict[spellId] = caster;
+    }
+
+    // JimsProxy (Rupture-DoT-Lingering-Icon): record the CP-scaling finisher we just sent
+    // to the server. Called from CMSG_CAST_SPELL handling, before the server has consumed
+    // the player's combo points. The aura-apply paths (SendAuraRefreshUpdate and the
+    // UpdateHandler aura-discovery loop) consult this snapshot to compute the real
+    // server-side duration for enemy debuffs that don't get SMSG_UPDATE_AURA_DURATION.
+    public void StorePendingFinisherCast(uint spellId, WowGuid128 target, byte comboPoints)
+    {
+        _pendingFinisherCast = (spellId, target, comboPoints, Environment.TickCount);
+    }
+
+    /// <summary>
+    /// JimsProxy: returns the CP-scaled aura duration in milliseconds if the matching
+    /// finisher cast was observed within ~3 s. The TTL is generous because aura discovery
+    /// can lag behind SMSG_SPELL_GO by a packet or two on busy emulators. Returns null
+    /// when no matching snapshot exists (proxy started mid-fight, off-screen mob debuff,
+    /// non-CP-scaling spell, etc.) so the caller can fall back to the CSV.
+    /// </summary>
+    public int? TryGetPendingFinisherDurationMs(uint spellId, WowGuid128 target)
+    {
+        if (_pendingFinisherCast is not { } pending)
+            return null;
+        if (pending.SpellId != spellId || pending.Target != target)
+            return null;
+        if (Environment.TickCount - pending.Tick > 3000)
+            return null;
+        return GameData.TryGetComboPointDuration(spellId, pending.ComboPoints);
     }
     public WowGuid128 GetLastAuraCasterOnTarget(WowGuid128 target, uint spellId)
     {

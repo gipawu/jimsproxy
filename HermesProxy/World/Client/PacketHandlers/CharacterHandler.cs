@@ -411,11 +411,17 @@ public partial class WorldClient
     void HandleUpdateComboPoints(WorldPacket packet)
     {
         ObjectUpdate updateData = new ObjectUpdate(GetSession().GameState.CurrentPlayerGuid, UpdateTypeModern.Values, GetSession());
-        updateData.ActivePlayerData.ComboTarget = packet.ReadPackedGuid().To128(GetSession().GameState);
+        WowGuid128 comboTarget = packet.ReadPackedGuid().To128(GetSession().GameState);
+        updateData.ActivePlayerData.ComboTarget = comboTarget;
         byte comboPoints = packet.ReadUInt8();
         sbyte powerSlot = ClassPowerTypes.GetPowerSlotForClass(GetSession().GameState.GetUnitClass(GetSession().GameState.CurrentPlayerGuid), PowerType.ComboPoints);
         if (powerSlot >= 0)
             updateData.UnitData.Power[powerSlot] = comboPoints;
+
+        // JimsProxy (Rupture-DoT-Lingering-Icon): cache CP + target so the CMSG_CAST_SPELL
+        // handler can snapshot the value before the server consumes it on the next finisher.
+        GetSession().GameState.CurrentComboPoints = comboPoints;
+        GetSession().GameState.CurrentComboTarget = comboTarget;
 
         UpdateObject updatePacket = new UpdateObject(GetSession().GameState);
         updatePacket.ObjectUpdates.Add(updateData);

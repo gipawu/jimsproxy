@@ -829,6 +829,7 @@ public partial class WorldClient
         if (!spell.Cast.CasterUnit.IsEmpty() && GameData.AuraSpells.Contains((uint)spell.Cast.SpellID))
         {
             uint spellId = (uint)spell.Cast.SpellID;
+
             foreach (WowGuid128 target in spell.Cast.HitTargets)
             {
                 // Check if this is an aura refresh (target already has this aura)
@@ -1472,6 +1473,17 @@ public partial class WorldClient
         spell.CasterGUID = packet.ReadPackedGuid().To128(GetSession().GameState);
         spell.SpellID = packet.ReadUInt32();
 
+        // JimsProxy (Rupture-DoT-Lingering-Icon): tag every periodic tick with spell + target so
+        // we can pinpoint last-tick-timestamp vs aura-removal-timestamp in the bundle. Remove
+        // once the lingering bug is rooted.
+        Framework.Logging.Log.Event("aura.tick", new
+        {
+            target_low = spell.TargetGUID.GetCounter(),
+            caster_low = spell.CasterGUID.GetCounter(),
+            spell_id = spell.SpellID,
+            caster_is_player = spell.CasterGUID == GetSession().GameState.CurrentPlayerGuid,
+        });
+
         var count = packet.ReadInt32();
         for (var i = 0; i < count; i++)
         {
@@ -1946,18 +1958,33 @@ public partial class WorldClient
         {
             // For other targets (enemy debuffs, party buffs), use best-guess duration
             // since they don't receive SMSG_UPDATE_AURA_DURATION.
-            GetSession().GameState.GetAuraDuration(target, slot, out int durationLeft, out int durationFull);
 
-            if (durationFull <= 0)
+            // JimsProxy (Rupture-DoT-Lingering-Icon): for vanilla CP-scaling finishers
+            // (Rupture, Kidney Shot), the snapshot must win over the cache because each
+            // cast can consume a different CP count and rewrite the aura. The cache holds
+            // the *previous* cast's duration; without this override a 3 CP recast on a
+            // mob that already had a 5 CP Rupture would inherit the stale 16 s. Snapshot
+            // returns null for non-finishers, so non-CP-scaling spells skip this branch.
+            int? finisherDurationMs = GetSession().GameState.TryGetPendingFinisherDurationMs(spellId, target);
+            int durationLeft;
+            int durationFull;
+            if (finisherDurationMs is int snapMs && snapMs > 0)
             {
-                durationFull = GameData.GetAuraSpellDuration(spellId);
+                durationFull = snapMs;
+                durationLeft = snapMs;
+            }
+            else
+            {
+                GetSession().GameState.GetAuraDuration(target, slot, out durationLeft, out durationFull);
+                if (durationFull <= 0)
+                    durationFull = GameData.GetAuraSpellDuration(spellId);
             }
 
             if (durationFull > 0)
             {
                 auraData.Flags |= AuraFlagsModern.Duration;
                 auraData.Duration = durationFull;
-                auraData.Remaining = durationFull;
+                auraData.Remaining = durationLeft > 0 ? durationLeft : durationFull;
 
                 GetSession().GameState.StoreAuraDurationLeft(target, slot, durationFull, Environment.TickCount);
                 GetSession().GameState.StoreAuraDurationFull(target, slot, durationFull);
