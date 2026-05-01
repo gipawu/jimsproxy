@@ -808,10 +808,16 @@ public partial class WorldClient
             {
                 if (GetSession().GameState.KnownHoveringMobs.Add(guid))
                 {
-                    Framework.Logging.Log.Event("hover.detect_fixedz_flag", new
+                    if (Framework.Settings.DebugOutput)
                     {
-                        guid = guid.ToString(),
-                    });
+                        if (Framework.Settings.DebugOutput)
+                        {
+                            Framework.Logging.Log.Event("hover.detect_fixedz_flag", new
+                            {
+                                guid = guid.ToString(),
+                            });
+                        }
+                    }
                 }
             }
 
@@ -1293,22 +1299,25 @@ public partial class WorldClient
                         });
                     }
                 }
-                Log.Event("pet.update_object", new
+                if (Framework.Settings.DebugOutput)
                 {
-                    guid = guid.ToString(),
-                    is_create = isCreate,
-                    entry_id = updateData.ObjectData.EntryID,
-                    display_id = updateData.UnitData.DisplayID,
-                    vis_flags = updateData.UnitData.VisFlags,
-                    stand_state = updateData.UnitData.StandState,
-                    shapeshift_form = updateData.UnitData.ShapeshiftForm,
-                    flags = updateData.UnitData.Flags,
-                    health = updateData.UnitData.Health,
-                    max_health = updateData.UnitData.MaxHealth,
-                    aura_full_update = auraUpdate?.UpdateAll ?? false,
-                    aura_count = auraSummary.Count,
-                    auras = auraSummary,
-                });
+                    Log.Event("pet.update_object", new
+                    {
+                        guid = guid.ToString(),
+                        is_create = isCreate,
+                        entry_id = updateData.ObjectData.EntryID,
+                        display_id = updateData.UnitData.DisplayID,
+                        vis_flags = updateData.UnitData.VisFlags,
+                        stand_state = updateData.UnitData.StandState,
+                        shapeshift_form = updateData.UnitData.ShapeshiftForm,
+                        flags = updateData.UnitData.Flags,
+                        health = updateData.UnitData.Health,
+                        max_health = updateData.UnitData.MaxHealth,
+                        aura_full_update = auraUpdate?.UpdateAll ?? false,
+                        aura_count = auraSummary.Count,
+                        auras = auraSummary,
+                    });
+                }
             }
         }
 
@@ -1684,27 +1693,33 @@ public partial class WorldClient
                 byte rawClassId = (byte)((updates[UNIT_FIELD_BYTES_0].UInt32Value >> 8) & 0xFF);
                 if (isPetUnit)
                 {
-                    Log.Event("pet.bytes0.observed", new
+                    if (Framework.Settings.DebugOutput)
                     {
-                        guid = guid.ToString(),
-                        high_type = guid.GetHighType().ToString(),
-                        bytes0_raw = updates[UNIT_FIELD_BYTES_0].UInt32Value,
-                        race_id = updateData.UnitData.RaceId,
-                        class_id = rawClassId,
-                        sex_id = updateData.UnitData.SexId,
-                        display_power = updateData.UnitData.DisplayPower,
-                    });
+                        Log.Event("pet.bytes0.observed", new
+                        {
+                            guid = guid.ToString(),
+                            high_type = guid.GetHighType().ToString(),
+                            bytes0_raw = updates[UNIT_FIELD_BYTES_0].UInt32Value,
+                            race_id = updateData.UnitData.RaceId,
+                            class_id = rawClassId,
+                            sex_id = updateData.UnitData.SexId,
+                            display_power = updateData.UnitData.DisplayPower,
+                        });
+                    }
                 }
                 if (isPetUnit && (rawClassId < 1 || rawClassId > 12))
                 {
-                    Log.Event("pet.class_id.fallback", new
+                    if (Framework.Settings.DebugOutput)
                     {
-                        guid = guid.ToString(),
-                        original_class_id = rawClassId,
-                        defaulted_to = 1,
-                        race_id = updateData.UnitData.RaceId,
-                        display_power = updateData.UnitData.DisplayPower,
-                    });
+                        Log.Event("pet.class_id.fallback", new
+                        {
+                            guid = guid.ToString(),
+                            original_class_id = rawClassId,
+                            defaulted_to = 1,
+                            race_id = updateData.UnitData.RaceId,
+                            display_power = updateData.UnitData.DisplayPower,
+                        });
+                    }
                     updateData.UnitData.ClassId = 1; // Warrior — guaranteed non-nil class file name
                 }
 
@@ -2272,19 +2287,25 @@ public partial class WorldClient
                                 aura.AuraData.Duration = durationFull;
                                 aura.AuraData.Remaining = durationLeft;
                             }
-                            Framework.Logging.Log.Event("aura.slot.set", new
+                            if (Framework.Settings.DebugOutput)
                             {
-                                target_low = guid.GetCounter(),
-                                slot = i,
-                                spell_id = aura.AuraData.SpellID,
-                                slot_field_value = _slotSpellId,
-                                duration_full = durationFull,
-                                duration_left = durationLeft,
-                                mask_aura = _maskAura,
-                                mask_levels = _maskLevels,
-                                mask_apps = _maskApps,
-                                is_player_target = guid == GetSession().GameState.CurrentPlayerGuid,
-                            });
+                                if (Framework.Settings.DebugOutput)
+                                {
+                                    Framework.Logging.Log.Event("aura.slot.set", new
+                                    {
+                                        target_low = guid.GetCounter(),
+                                        slot = i,
+                                        spell_id = aura.AuraData.SpellID,
+                                        slot_field_value = _slotSpellId,
+                                        duration_full = durationFull,
+                                        duration_left = durationLeft,
+                                        mask_aura = _maskAura,
+                                        mask_levels = _maskLevels,
+                                        mask_apps = _maskApps,
+                                        is_player_target = guid == GetSession().GameState.CurrentPlayerGuid,
+                                    });
+                                }
+                            }
                             //MIRASU: Set NoCaster flag when caster lookup fails, or the 1.14.2 client's
                             //MIRASU: UI buff-bar treats the aura as malformed-for-display (icon hidden)
                             //MIRASU: even though the effect engine still applies stat mods from the spell
@@ -2310,30 +2331,42 @@ public partial class WorldClient
                         {
                             GetSession().GameState.ClearAuraDuration(guid, i);
                             GetSession().GameState.ClearAuraCaster(guid, i);
-                            Framework.Logging.Log.Event("aura.slot.cleared", new
+                            if (Framework.Settings.DebugOutput)
                             {
-                                target_low = guid.GetCounter(),
-                                slot = i,
-                                slot_field_value = _slotSpellId,
-                                mask_aura = _maskAura,
-                                mask_levels = _maskLevels,
-                                mask_apps = _maskApps,
-                                is_player_target = guid == GetSession().GameState.CurrentPlayerGuid,
-                            });
+                                if (Framework.Settings.DebugOutput)
+                                {
+                                    Framework.Logging.Log.Event("aura.slot.cleared", new
+                                    {
+                                        target_low = guid.GetCounter(),
+                                        slot = i,
+                                        slot_field_value = _slotSpellId,
+                                        mask_aura = _maskAura,
+                                        mask_levels = _maskLevels,
+                                        mask_apps = _maskApps,
+                                        is_player_target = guid == GetSession().GameState.CurrentPlayerGuid,
+                                    });
+                                }
+                            }
                         }
                         else
                         {
                             // levels or apps mask without UNIT_FIELD_AURA mask — slot likely already
                             // empty server-side. Modern client never gets a clear for this case.
-                            Framework.Logging.Log.Event("aura.slot.skipped", new
+                            if (Framework.Settings.DebugOutput)
                             {
-                                target_low = guid.GetCounter(),
-                                slot = i,
-                                mask_aura = _maskAura,
-                                mask_levels = _maskLevels,
-                                mask_apps = _maskApps,
-                                is_player_target = guid == GetSession().GameState.CurrentPlayerGuid,
-                            });
+                                if (Framework.Settings.DebugOutput)
+                                {
+                                    Framework.Logging.Log.Event("aura.slot.skipped", new
+                                    {
+                                        target_low = guid.GetCounter(),
+                                        slot = i,
+                                        mask_aura = _maskAura,
+                                        mask_levels = _maskLevels,
+                                        mask_apps = _maskApps,
+                                        is_player_target = guid == GetSession().GameState.CurrentPlayerGuid,
+                                    });
+                                }
+                            }
                         }
                         if (aura.AuraData != null || updateMaskArray[UNIT_FIELD_AURA + i])
                             auraUpdate.Auras.Add(aura);
@@ -2863,14 +2896,17 @@ public partial class WorldClient
             // 5=Shadow, 6=Arcane.
             if (spellStatsDirty)
             {
-                Log.Event("stats.spell_power.update", new
+                if (Framework.Settings.DebugOutput)
                 {
-                    pos = updateData.ActivePlayerData.ModDamageDonePos,
-                    neg = updateData.ActivePlayerData.ModDamageDoneNeg,
-                    pct = updateData.ActivePlayerData.ModDamageDonePercent,
-                    healing_pos = updateData.ActivePlayerData.ModHealingDonePos,
-                    has_healing_field = PLAYER_FIELD_MOD_HEALING_DONE_POS >= 0,
-                });
+                    Log.Event("stats.spell_power.update", new
+                    {
+                        pos = updateData.ActivePlayerData.ModDamageDonePos,
+                        neg = updateData.ActivePlayerData.ModDamageDoneNeg,
+                        pct = updateData.ActivePlayerData.ModDamageDonePercent,
+                        healing_pos = updateData.ActivePlayerData.ModHealingDonePos,
+                        has_healing_field = PLAYER_FIELD_MOD_HEALING_DONE_POS >= 0,
+                    });
+                }
             }
 
             // JimsProxy: synthesize Spell Healing and per-school Spell Damage from equipment-
@@ -2901,12 +2937,15 @@ public partial class WorldClient
                         updateData.ActivePlayerData.ModDamageDonePos[i] = damageDone[i];
                 }
 
-                Log.Event("stats.spell_power.synthesized", new
+                if (Framework.Settings.DebugOutput)
                 {
-                    healing_done = healingDone,
-                    damage_done = damageDone,
-                    equipped_item_count = GetSession().GameState.CurrentEquippedItemIds.Count(id => id > 0),
-                });
+                    Log.Event("stats.spell_power.synthesized", new
+                    {
+                        healing_done = healingDone,
+                        damage_done = damageDone,
+                        equipped_item_count = GetSession().GameState.CurrentEquippedItemIds.Count(id => id > 0),
+                    });
+                }
 
                 // JimsProxy (vanilla synthesized spell crit): vanilla 1.12 has no
                 // PLAYER_SPELL_CRIT_PERCENTAGE1 field. Compute base + INT/rate + aura
@@ -2969,15 +3008,18 @@ public partial class WorldClient
                     }
                 }
 
-                Log.Event("stats.spell_crit.synthesized", new
+                if (Framework.Settings.DebugOutput)
                 {
-                    player_class = GetSession().GameState.CurrentPlayerClass,
-                    player_level = GetSession().GameState.CurrentPlayerLevel,
-                    player_intellect = GetSession().GameState.CurrentPlayerIntellect,
-                    crit_per_school = critByschool,
-                    known_spell_count = GetSession().GameState.CurrentPlayerKnownSpells.Count,
-                    crit_contributions = critContribs,
-                });
+                    Log.Event("stats.spell_crit.synthesized", new
+                    {
+                        player_class = GetSession().GameState.CurrentPlayerClass,
+                        player_level = GetSession().GameState.CurrentPlayerLevel,
+                        player_intellect = GetSession().GameState.CurrentPlayerIntellect,
+                        crit_per_school = critByschool,
+                        known_spell_count = GetSession().GameState.CurrentPlayerKnownSpells.Count,
+                        crit_contributions = critContribs,
+                    });
+                }
 
                 // JimsProxy: synthesize melee/ranged Hit Chance. Vanilla 1.12 has no
                 // UiHitModifier-equivalent field — Kronos can't push a value the modern
@@ -3055,18 +3097,21 @@ public partial class WorldClient
                 int rangedItemId = 0;
                 if (GetSession().GameState.CurrentEquippedItemIds.Length > 18)
                     rangedItemId = GetSession().GameState.CurrentEquippedItemIds[18];
-                Log.Event("stats.ranged.snapshot", new
+                if (Framework.Settings.DebugOutput)
                 {
-                    player_class = GetSession().GameState.CurrentPlayerClass,
-                    ranged_crit_percentage = updateData.ActivePlayerData.RangedCritPercentage,
-                    ui_hit_modifier_synth = hitMod,
-                    ui_spell_hit_modifier_synth = spellHitMod,
-                    hit_contributions = hitContribs,
-                    spell_hit_contributions = spellHitContribs,
-                    spellmod_hit_auras = unmappedAuras,
-                    ranged_attack_power = updateData.UnitData.RangedAttackPower,
-                    ranged_slot_item_id = rangedItemId,
-                });
+                    Log.Event("stats.ranged.snapshot", new
+                    {
+                        player_class = GetSession().GameState.CurrentPlayerClass,
+                        ranged_crit_percentage = updateData.ActivePlayerData.RangedCritPercentage,
+                        ui_hit_modifier_synth = hitMod,
+                        ui_spell_hit_modifier_synth = spellHitMod,
+                        hit_contributions = hitContribs,
+                        spell_hit_contributions = spellHitContribs,
+                        spellmod_hit_auras = unmappedAuras,
+                        ranged_attack_power = updateData.UnitData.RangedAttackPower,
+                        ranged_slot_item_id = rangedItemId,
+                    });
+                }
             }
             int PLAYER_FIELD_MOD_TARGET_RESISTANCE = LegacyVersion.GetUpdateField(PlayerField.PLAYER_FIELD_MOD_TARGET_RESISTANCE);
             if (PLAYER_FIELD_MOD_TARGET_RESISTANCE >= 0 && updateMaskArray[PLAYER_FIELD_MOD_TARGET_RESISTANCE])
