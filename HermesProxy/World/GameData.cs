@@ -68,6 +68,10 @@ public static partial class GameData
     // Rogue energy-based abilities and feral-druid cat-form abilities use StartRecoveryTime=1000
     // in vanilla Spell.dbc. Unknown spells default to 1500ms in GetGcdDurationMs.
     public static FrozenSet<uint> Spell1sGcd = FrozenSet<uint>.Empty;
+    // JimsProxy (issue #91): channeled spells report CastTime==0 on the wire but need
+    // SMSG_SPELL_START forwarded so the modern client can initialize the channel bar.
+    // Sourced from SpellMisc DBC (Attributes_1 & 0x44), same data as JimsPlus castbars.
+    public static FrozenSet<uint> ChanneledSpells = FrozenSet<uint>.Empty;
     public static FrozenSet<uint> AuraSpells = FrozenSet<uint>.Empty;
     public static FrozenDictionary<uint, int> AuraDurations = FrozenDictionary<uint, int>.Empty;
     // JimsProxy: vanilla 1.12 spell aura effects, keyed by spell id, each value is the array of
@@ -385,6 +389,11 @@ public static partial class GameData
         return OffGcdSpells.Contains(spellId);
     }
 
+    public static bool IsChanneledSpell(uint spellId)
+    {
+        return ChanneledSpells.Contains(spellId);
+    }
+
     /// <summary>
     /// Returns the GCD duration in milliseconds triggered by the given spell on vanilla
     /// 1.12 servers. Defaults to 1500ms; rogue energy abilities and feral-druid cat-form
@@ -408,6 +417,55 @@ public static partial class GameData
             return duration;
 
         return 0;
+    }
+
+    // JimsProxy (Rupture-DoT-Lingering-Icon): vanilla 1.12 finishers whose aura duration
+    // scales with combo points consumed. The legacy server applies the scaled duration
+    // server-side at cast time but never echoes it back for *enemy* debuffs (only the
+    // player's own auras get SMSG_UPDATE_AURA_DURATION). AuraDurations{1}.csv only carries
+    // the raw SpellDuration.dbc base, which for Rupture is a flat 6000 ms with no CP info.
+    // We compute the real duration here using the combo-point count snapshotted at
+    // CMSG_CAST_SPELL time. Slice and Dice is intentionally absent — it targets self, so
+    // SMSG_UPDATE_AURA_DURATION already delivers the talented-and-CP-scaled duration; the
+    // proxy never falls back to a CSV for it. Eviscerate is absent because it has no aura.
+    private static readonly FrozenDictionary<uint, (int BaseMs, int PerCpMs)> ComboPointFinisherDurations =
+        new Dictionary<uint, (int, int)>
+        {
+            // Rupture (all 6 ranks): (6 + 2 × CP) seconds → base 6000, +2000 per CP.
+            { 1943,  (6000, 2000) },
+            { 8639,  (6000, 2000) },
+            { 8640,  (6000, 2000) },
+            { 11273, (6000, 2000) },
+            { 11274, (6000, 2000) },
+            { 11275, (6000, 2000) },
+
+            // Kidney Shot (both ranks): (1 + CP) seconds → base 1000, +1000 per CP.
+            { 408,  (1000, 1000) },
+            { 8643, (1000, 1000) },
+        }.ToFrozenDictionary();
+
+    /// <summary>
+    /// JimsProxy (Rupture-DoT-Lingering-Icon): if <paramref name="spellId"/> is a known
+    /// vanilla CP-scaling finisher, returns the actual aura duration in milliseconds for
+    /// the given combo-point count. Returns null otherwise (caller falls back to CSV).
+    /// </summary>
+    public static int? TryGetComboPointDuration(uint spellId, byte comboPoints)
+    {
+        if (comboPoints == 0)
+            return null;
+        if (!ComboPointFinisherDurations.TryGetValue(spellId, out var formula))
+            return null;
+        return formula.BaseMs + formula.PerCpMs * comboPoints;
+    }
+
+    /// <summary>
+    /// JimsProxy: true if the spell is a CP-scaling enemy-debuff finisher we compute
+    /// duration for locally. Used by the CMSG_CAST_SPELL handler to decide whether to
+    /// snapshot the player's current combo points before the server consumes them.
+    /// </summary>
+    public static bool IsComboPointFinisher(uint spellId)
+    {
+        return ComboPointFinisherDurations.ContainsKey(spellId);
     }
 
     public static int GetTotemSlotForSpell(uint spellId)
@@ -687,6 +745,7 @@ public static partial class GameData
             LoadAutoRepeatSpells,
             LoadOffGcdSpells,
             LoadSpell1sGcd,
+            LoadChanneledSpells,
             LoadAuraSpells,
             LoadAuraDurations,
             LoadTaxiPaths,
@@ -1814,6 +1873,29 @@ public static partial class GameData
             set.Add(spellId);
         }
         Spell1sGcd = set.ToFrozenSet();
+    }
+
+    public static void LoadChanneledSpells()
+    {
+        if (LegacyVersion.ExpansionVersion > 1)
+            return;
+
+        var path = Path.Combine("CSV", $"SpellChanneled{LegacyVersion.ExpansionVersion}.csv");
+        if (!File.Exists(path))
+        {
+            Log.Print(LogType.Storage, $"WARNING: {path} not found — channeled spell detection " +
+                                       "is disabled. Channeled spell bars may start partially depleted.");
+            return;
+        }
+
+        using var reader = Sep.Reader(o => o with { HasHeader = true }).FromFile(path);
+        var set = new HashSet<uint>(EstimateRowCount(path, 8));
+        foreach (var row in reader)
+        {
+            uint spellId = uint.Parse(row[0].Span);
+            set.Add(spellId);
+        }
+        ChanneledSpells = set.ToFrozenSet();
     }
 
     public static void LoadAuraSpells()

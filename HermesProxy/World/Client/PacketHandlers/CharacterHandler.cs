@@ -1,4 +1,5 @@
-﻿using HermesProxy.Enums;
+﻿using Framework.Logging;
+using HermesProxy.Enums;
 using HermesProxy.World.Enums;
 using HermesProxy.World.Objects;
 using HermesProxy.World.Server.Packets;
@@ -411,11 +412,17 @@ public partial class WorldClient
     void HandleUpdateComboPoints(WorldPacket packet)
     {
         ObjectUpdate updateData = new ObjectUpdate(GetSession().GameState.CurrentPlayerGuid, UpdateTypeModern.Values, GetSession());
-        updateData.ActivePlayerData.ComboTarget = packet.ReadPackedGuid().To128(GetSession().GameState);
+        WowGuid128 comboTarget = packet.ReadPackedGuid().To128(GetSession().GameState);
+        updateData.ActivePlayerData.ComboTarget = comboTarget;
         byte comboPoints = packet.ReadUInt8();
         sbyte powerSlot = ClassPowerTypes.GetPowerSlotForClass(GetSession().GameState.GetUnitClass(GetSession().GameState.CurrentPlayerGuid), PowerType.ComboPoints);
         if (powerSlot >= 0)
             updateData.UnitData.Power[powerSlot] = comboPoints;
+
+        // JimsProxy (Rupture-DoT-Lingering-Icon): cache CP + target so the CMSG_CAST_SPELL
+        // handler can snapshot the value before the server consumes it on the next finisher.
+        GetSession().GameState.CurrentComboPoints = comboPoints;
+        GetSession().GameState.CurrentComboTarget = comboTarget;
 
         UpdateObject updatePacket = new UpdateObject(GetSession().GameState);
         updatePacket.ObjectUpdates.Add(updateData);
@@ -463,6 +470,13 @@ public partial class WorldClient
                             itemData.Index = i;
                             itemData.Item.ItemID = realItemId;
 
+                            // PLAYER_VISIBLE_ITEM_X_PROPERTIES holds the random property/suffix ID
+                            // (signed int32 stored in uint32 — negative = ItemRandomSuffix.dbc, positive = ItemRandomProperties.dbc).
+                            // Without it, green "of the Bear/Owl/..." gear renders without its suffix on inspect.
+                            int propertiesIndex = PLAYER_VISIBLE_ITEM_1_0 + (offset - 4) + i * offset;
+                            if (updates.ContainsKey(propertiesIndex))
+                                itemData.Item.RandomPropertiesID = updates[propertiesIndex].UInt32Value;
+
                             uint finalEnchantId = packedEnchantId;
                             if (finalEnchantId == 0 &&
                                 GetSession().GameState.CachedPlayerEnchants.TryGetValue(inspect.DisplayInfo.GUID, out var cachedEnchants))
@@ -472,6 +486,15 @@ public partial class WorldClient
 
                             if (finalEnchantId != 0)
                                 itemData.Enchants.Add(new InspectEnchantData(finalEnchantId, 0));
+
+                            Log.Event("inspect.item", new
+                            {
+                                target = inspect.DisplayInfo.GUID.ToString(),
+                                slot = i,
+                                item_id = realItemId,
+                                random_property_id = (int)itemData.Item.RandomPropertiesID,
+                                enchant = finalEnchantId
+                            });
 
                             inspect.DisplayInfo.Items.Add(itemData);
                         }

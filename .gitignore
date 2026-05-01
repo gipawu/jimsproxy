@@ -515,3 +515,4 @@ debug.*
 
 # Build script output
 build/
+build-test/
