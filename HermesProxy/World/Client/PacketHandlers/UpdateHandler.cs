@@ -2751,13 +2751,17 @@ public partial class WorldClient
                 {
                     if (updateMaskArray[PLAYER_EXPLORED_ZONES_1 + i])
                     {
+                        // Two legacy uint32 zone fields pack into one modern ulong: even i → low 32,
+                        // odd i → high 32. On a partial UPDATE_FIELDS we must replace only the
+                        // targeted half and PRESERVE the other half — otherwise the paired field's
+                        // explored bits get clobbered, causing previously-explored areas to revert
+                        // to unexplored on the world map (WowLegacyCore/HermesProxy#331).
+                        ulong existing = updateData.ActivePlayerData.ExploredZones[i / 2] ?? 0UL;
+                        uint newValue = updates[PLAYER_EXPLORED_ZONES_1 + i].UInt32Value;
                         if ((i & 1) != 0)
-                        {
-                            ulong oldValue = updateData.ActivePlayerData.ExploredZones[i / 2] != null ? (ulong)updateData.ActivePlayerData.ExploredZones[i / 2]! : 0;
-                            updateData.ActivePlayerData.ExploredZones[i / 2] = oldValue | ((ulong)updates[PLAYER_EXPLORED_ZONES_1 + i].UInt32Value << 32);
-                        }
+                            updateData.ActivePlayerData.ExploredZones[i / 2] = (existing & 0xFFFFFFFFUL) | ((ulong)newValue << 32);
                         else
-                            updateData.ActivePlayerData.ExploredZones[i / 2] = updates[PLAYER_EXPLORED_ZONES_1 + i].UInt32Value;
+                            updateData.ActivePlayerData.ExploredZones[i / 2] = (existing & 0xFFFFFFFF00000000UL) | (ulong)newValue;
                     }
                 }
             }
