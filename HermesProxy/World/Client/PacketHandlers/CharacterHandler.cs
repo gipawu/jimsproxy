@@ -487,14 +487,17 @@ public partial class WorldClient
                             if (finalEnchantId != 0)
                                 itemData.Enchants.Add(new InspectEnchantData(finalEnchantId, 0));
 
-                            Log.Event("inspect.item", new
+                            if (Framework.Settings.DebugOutput)
                             {
-                                target = inspect.DisplayInfo.GUID.ToString(),
-                                slot = i,
-                                item_id = realItemId,
-                                random_property_id = (int)itemData.Item.RandomPropertiesID,
-                                enchant = finalEnchantId
-                            });
+                                Log.Event("inspect.item", new
+                                {
+                                    target = inspect.DisplayInfo.GUID.ToString(),
+                                    slot = i,
+                                    item_id = realItemId,
+                                    random_property_id = (int)itemData.Item.RandomPropertiesID,
+                                    enchant = finalEnchantId
+                                });
+                            }
 
                             inspect.DisplayInfo.Items.Add(itemData);
                         }

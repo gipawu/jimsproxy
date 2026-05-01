@@ -475,10 +475,16 @@ public partial class WorldClient
                 if (IsHoveringMob(guid))
                 {
                     moveSpline.SplineFlags |= SplineFlagModern.Flying | SplineFlagModern.AnimTierHover;
-                    Framework.Logging.Log.Event("hover.spline_stop_override", new
+                    if (Framework.Settings.DebugOutput)
                     {
-                        guid = guid.ToString(),
-                    });
+                        if (Framework.Settings.DebugOutput)
+                        {
+                            Framework.Logging.Log.Event("hover.spline_stop_override", new
+                            {
+                                guid = guid.ToString(),
+                            });
+                        }
+                    }
                 }
                 MonsterMove moveStop = new MonsterMove(guid, moveSpline);
                 SendPacketToClient(moveStop);
@@ -511,10 +517,16 @@ public partial class WorldClient
             {
                 if (GetSession().GameState.KnownHoveringMobs.Add(guid))
                 {
-                    Framework.Logging.Log.Event("hover.detect_flying_spline", new
+                    if (Framework.Settings.DebugOutput)
                     {
-                        guid = guid.ToString(),
-                    });
+                        if (Framework.Settings.DebugOutput)
+                        {
+                            Framework.Logging.Log.Event("hover.detect_flying_spline", new
+                            {
+                                guid = guid.ToString(),
+                            });
+                        }
+                    }
                 }
             }
 
@@ -535,11 +547,17 @@ public partial class WorldClient
             {
                 moveSpline.SplineFlags &= ~(SplineFlagModern.Unknown5 | SplineFlagModern.Falling | SplineFlagModern.FallingSlow | SplineFlagModern.SmoothGroundPath | SplineFlagModern.CatmullRom);
                 moveSpline.SplineFlags |= SplineFlagModern.Flying | SplineFlagModern.AnimTierHover;
-                Framework.Logging.Log.Event("hover.spline_override", new
+                if (Framework.Settings.DebugOutput)
                 {
-                    guid = guid.ToString(),
-                    spline_type = moveSpline.SplineType.ToString(),
-                });
+                    if (Framework.Settings.DebugOutput)
+                    {
+                        Framework.Logging.Log.Event("hover.spline_override", new
+                        {
+                            guid = guid.ToString(),
+                            spline_type = moveSpline.SplineType.ToString(),
+                        });
+                    }
+                }
             }
         }
         else if (LegacyVersion.RemovedInVersion(ClientVersionBuild.V3_0_2_9056))
