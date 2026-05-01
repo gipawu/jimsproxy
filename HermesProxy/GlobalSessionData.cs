@@ -72,6 +72,37 @@ public sealed class GameSessionData
     public uint LastEnteredAreaTrigger;
     public uint LastDispellSpellId;
     public Dictionary<WowGuid128, uint[]> CachedPlayerEnchants = new();
+    // JimsProxy: tracks the active player's equipped item entry IDs by slot 0..18
+    // (head, neck, shoulders, body, chest, waist, legs, feet, wrists, hands, finger1,
+    // finger2, trinket1, trinket2, back, mainhand, offhand, ranged, tabard). Updated
+    // incrementally as VisibleItems entries arrive from the legacy server. Read by the
+    // synthesized-spell-stats path to walk equip-effect triggered spells and surface
+    // vanilla item bonuses (especially +healing) on the modern character sheet, since
+    // vanilla 1.12 has no PLAYER_FIELD_MOD_HEALING_DONE_POS field at the protocol level.
+    public int[] CurrentEquippedItemIds = new int[19];
+    // JimsProxy: tracks the active player's currently-applied aura spell ids by slot. Includes
+    // raid/party buffs (Greater Blessing of Wisdom, Mark of the Wild, etc.) and class set
+    // bonuses (e.g. T2 Priest 8-piece +healing aura). Walked alongside equipped items by the
+    // synthesized-spell-stats path so set-bonus and consumable +healing/+damage flows surface
+    // on the modern client's character sheet, not just per-piece equip effects. Slot index
+    // matches the legacy UNIT_FIELD_AURA layout. Vanilla 1.12 has 56 slots (16 visible + 40
+    // passive); we size at 256 to cover later expansions safely.
+    public uint[] CurrentPlayerAuraSpellIds = new uint[256];
+    // JimsProxy: minimum context the synthesized-spell-crit path needs about the active
+    // player. Class+level pick the per-class crit constants (vanilla cmangos formula
+    // chance = base + INT / (rate0 + rate1*level)), Intellect drives the linear term.
+    // All four are read from the player's UNIT_FIELD_BYTES_0 / UNIT_FIELD_LEVEL /
+    // UNIT_FIELD_STAT3 in UpdateHandler. Default 0/0/0 is treated as "not yet known"
+    // and skips the synthesis.
+    public byte CurrentPlayerClass;
+    public byte CurrentPlayerLevel;
+    public int CurrentPlayerIntellect;
+    // JimsProxy: spells in the active player's spellbook (SMSG_SEND_KNOWN_SPELLS).
+    // Used by the synthesized-spell-crit path to pick up talent passives that get
+    // CastSpell()'d on self by the legacy server but don't appear in the visible
+    // aura array (vanilla server buries some passives below the visible-aura cutoff).
+    // Walked alongside active auras when summing crit aura contributions.
+    public System.Collections.Generic.HashSet<uint> CurrentPlayerKnownSpells = new();
     // JimsProxy: per-unit HP cache used to compute overhealing on legacy servers
     // that don't include OverHeal in SMSG_SPELL_HEAL_LOG (1.12 vanilla). Authoritative
     // source is UNIT_FIELD_HEALTH / UNIT_FIELD_MAXHEALTH from SMSG_UPDATE_OBJECT;

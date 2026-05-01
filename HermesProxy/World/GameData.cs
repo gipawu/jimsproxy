@@ -70,6 +70,15 @@ public static partial class GameData
     public static FrozenSet<uint> Spell1sGcd = FrozenSet<uint>.Empty;
     public static FrozenSet<uint> AuraSpells = FrozenSet<uint>.Empty;
     public static FrozenDictionary<uint, int> AuraDurations = FrozenDictionary<uint, int>.Empty;
+    // JimsProxy: vanilla 1.12 spell aura effects, keyed by spell id, each value is the array of
+    // APPLY_AURA effects (effIdx, auraType, basePoints, miscValue) we care about for stat
+    // synthesis. The vanilla 1.12 protocol has no PLAYER_FIELD_MOD_HEALING_DONE_POS field at all,
+    // so the modern 1.14 client's character-sheet "Spell Healing" row would always show 0 unless
+    // the proxy reads each equipped item's TriggeredSpellId, looks up its passive aura(s) here,
+    // and synthesizes ModHealingDonePos from MOD_HEALING_DONE (135) effects. We also cover
+    // MOD_DAMAGE_DONE (13) for completeness — the server normally pushes MOD_DAMAGE_DONE_POS but
+    // certain Kronos paths drop fields that are zero, so synthesizing fills any gaps.
+    public static FrozenDictionary<uint, SpellAuraEffect[]> SpellAuraEffects = FrozenDictionary<uint, SpellAuraEffect[]>.Empty;
     public static FrozenDictionary<uint, TaxiPath> TaxiPaths = FrozenDictionary<uint, TaxiPath>.Empty;
     public static int[,] TaxiNodesGraph = new int[250, 250];
     public static FrozenDictionary<uint /*questId*/, uint /*questBit*/> QuestBits = FrozenDictionary<uint, uint>.Empty;
@@ -671,6 +680,7 @@ public static partial class GameData
             LoadRaceFaction,
             LoadDispellSpells,
             LoadSpellEffectPoints,
+            LoadSpellAuraEffects,
             LoadStackableAuras,
             LoadMountAuras,
             LoadMeleeSpells,
@@ -1299,6 +1309,393 @@ public static partial class GameData
                 basePointsEff3 += 1;
 
             SpellEffectPoints.Add(spellId, new List<float> { basePointsEff1, basePointsEff2, basePointsEff3 });
+        }
+    }
+
+    // JimsProxy: load vanilla 1.12 spell aura effects for stat synthesis. CSV format:
+    //   SpellId,EffectIndex,AuraType,BasePoints,MiscValue
+    // One row per relevant APPLY_AURA effect. The CSV is pre-filtered to the aura types we
+    // synthesize (13 MOD_DAMAGE_DONE, 79 MOD_DAMAGE_PCT_DONE, 115 MOD_HEALING, 118 MOD_HEALING_PCT,
+    // 135 MOD_HEALING_DONE) so the file stays small. BasePoints follow the SpellEffectPoints
+    // convention: stored as raw DBC value, +1 applied here on load (since vanilla EffectDieSides=1
+    // for almost all bonus auras). Vanilla-only — TBC+ has the protocol fields natively.
+    public static void LoadSpellAuraEffects()
+    {
+        if (LegacyVersion.ExpansionVersion != 1)
+            return;
+
+        var path = Path.Combine("CSV", $"SpellAuraEffects{LegacyVersion.ExpansionVersion}.csv");
+        if (!File.Exists(path))
+            return;
+
+        using var reader = Sep.Reader(o => o with { HasHeader = true }).FromFile(path);
+
+        var byId = new Dictionary<uint, List<SpellAuraEffect>>();
+        foreach (var row in reader)
+        {
+            uint spellId = uint.Parse(row[0].Span);
+            byte effIdx = byte.Parse(row[1].Span);
+            short auraType = short.Parse(row[2].Span);
+            int basePoints = int.Parse(row[3].Span);
+            int miscValue = int.Parse(row[4].Span);
+
+            // Vanilla DBC convention: realValue = basePoints + dieSides, with dieSides=1 for
+            // these stat-modifier auras. Always apply +1 — rank-1 effects (e.g. spell 15464
+            // "Increased Hit Chance 1" = +1% hit, spell 19426 Lethal Shots rank 1 = +1% ranged
+            // crit) are stored with basePoints=0 and would silently contribute 0 if we skipped.
+            basePoints += 1;
+
+            if (!byId.TryGetValue(spellId, out var list))
+            {
+                list = new List<SpellAuraEffect>(2);
+                byId[spellId] = list;
+            }
+            list.Add(new SpellAuraEffect(effIdx, auraType, basePoints, miscValue));
+        }
+
+        SpellAuraEffects = byId.ToFrozenDictionary(kv => kv.Key, kv => kv.Value.ToArray());
+    }
+
+    // JimsProxy: walk the player's equipped items + active aura spell ids and sum every
+    // relevant aura effect (MOD_DAMAGE_DONE, MOD_HEALING_DONE) into per-school +damage and
+    // total +healing values. Returns null arrays/value if no relevant aura was found, so
+    // callers can preserve any values the legacy server actually pushed via
+    // PLAYER_FIELD_MOD_DAMAGE_DONE_POS. Vanilla-only: TBC+ already exposes
+    // ModHealingDonePos/ModDamageDonePos natively in the protocol.
+    //
+    // Two contribution sources, summed together:
+    //  1) Each equipped item's ON_EQUIP triggered spell (TriggeredSpellTypes[t] == 1) —
+    //     handles per-piece +healing/+damage gear (Cleric ring, Robe of the Magi, T3
+    //     individual pieces, etc.). On-use/proc/charges items are skipped.
+    //  2) The player's currently-applied auras — handles raid/party buffs (Greater
+    //     Blessing of Wisdom +20 healing per piece, Mark of the Wild) and class set
+    //     bonuses (T2 Priest 8-piece +22 healing, T3 Druid 5-piece +44 healing) which
+    //     are server-applied auras, not equipment triggers.
+    //
+    // School mask convention (MOD_DAMAGE_DONE miscValue):
+    //   bit 0 = Physical, bit 1 = Holy, bit 2 = Fire, bit 3 = Nature,
+    //   bit 4 = Frost,    bit 5 = Shadow, bit 6 = Arcane.
+    // Modern client's ModDamageDonePos[] is indexed identically (0=Physical, 6=Arcane).
+    public static (int? healingDone, int?[] damageDone) ComputeEquipmentSpellStats(
+        int[] equippedItemIds, uint[] activeAuraSpellIds)
+    {
+        var damage = new int[7];
+        int healing = 0;
+        bool anyHealing = false;
+        bool anyDamage = false;
+
+        // Source 1: equipped items' ON_EQUIP triggered spells.
+        for (int slot = 0; slot < equippedItemIds.Length; slot++)
+        {
+            int itemId = equippedItemIds[slot];
+            if (itemId <= 0)
+                continue;
+
+            ItemTemplate? tmpl = GetItemTemplate((uint)itemId);
+            if (tmpl == null)
+                continue;
+
+            for (int t = 0; t < tmpl.TriggeredSpellIds.Length; t++)
+            {
+                int spellId = tmpl.TriggeredSpellIds[t];
+                if (spellId <= 0)
+                    continue;
+                // Only ON_EQUIP (vanilla item_template.spelltrigger_x = 1) contributes to
+                // permanent equip bonuses. Type 0 (USE) is click trinkets, 2 (CHANCE_ON_HIT)
+                // is procs — neither maps to a permanent character-sheet stat.
+                if (tmpl.TriggeredSpellTypes[t] != 1)
+                    continue;
+
+                AccumulateSpellAuras((uint)spellId, damage, ref healing, ref anyHealing, ref anyDamage);
+            }
+        }
+
+        // Source 2: active auras applied to the player (raid buffs, set bonuses, etc.).
+        for (int slot = 0; slot < activeAuraSpellIds.Length; slot++)
+        {
+            uint spellId = activeAuraSpellIds[slot];
+            if (spellId == 0)
+                continue;
+            AccumulateSpellAuras(spellId, damage, ref healing, ref anyHealing, ref anyDamage);
+        }
+
+        var resultDamage = new int?[7];
+        if (anyDamage)
+        {
+            for (int i = 0; i < 7; i++)
+                resultDamage[i] = damage[i];
+        }
+        return (anyHealing ? healing : null, resultDamage);
+    }
+
+    // JimsProxy: vanilla 1.12 spell crit base + Int-per-1%-crit constants. Sourced from
+    // BetterCharacterStats addon's GetSpellCritChance (helper.lua), which uses the
+    // empirically-validated Allakhazam theorycraft values that the actual 1.12 client's
+    // gtChanceToSpellCrit/Base DBCs encode. These are NOT what mangos hardcoded — the
+    // mangos table (still flagged `[TZERO] from mangos 3462 for 1.12 MUST BE CHECKED`
+    // in cmangos/vmangos source 20+ years later) is dramatically wrong for paladin
+    // (mangos 3.70 base + INT/53.77 vs reality 0 base + INT/29.5 — almost 2x Int
+    // efficiency). Verified: paladin at 354 INT, Holy Power R5 talent → 354/29.5 + 5
+    // = 17.00% Holy crit, matching the in-game vanilla character sheet exactly.
+    //
+    // Formula is `chance = base + INT / rate` with NO level scaling — the addon assumes
+    // L60 because that's what every raider uses, and 1.12's level scaling for spell crit
+    // is irrelevant to the modern Classic Era client's character sheet (which we're
+    // synthesizing for). Sub-60 characters will be slightly off; not worth the
+    // complexity for a transient state.
+    //
+    // Index = vanilla CLASS id (1=Warrior, 2=Paladin, ... 11=Druid). Non-spellcaster
+    // classes default to (0, 1.0) which yields 0% crit (warrior/rogue/hunter never see
+    // a spell-crit row on the character sheet anyway).
+    private static readonly (float Base, float Rate)[] s_spellCritData = new (float, float)[]
+    {
+        (0.0f,  1.0f), // 0 unused
+        (0.0f,  1.0f), // 1 warrior — no spell crit
+        (0.0f,  29.5f), // 2 paladin (Allakhazam: pure INT/29.5, no base)
+        (0.0f,  1.0f), // 3 hunter — no spell crit
+        (0.0f,  1.0f), // 4 rogue — no spell crit
+        (0.8f,  59.56f), // 5 priest
+        (0.0f,  1.0f), // 6 unused
+        (1.8f,  59.2f), // 7 shaman
+        (0.2f,  59.5f), // 8 mage
+        (1.7f,  60.6f), // 9 warlock
+        (0.0f,  1.0f), // 10 unused
+        (1.8f,  60.0f), // 11 druid
+    };
+
+    // JimsProxy: synthesize per-school spell crit % for the active player. Vanilla 1.12
+    // protocol has no PLAYER_SPELL_CRIT_PERCENTAGE1 field at all (TBC+ adds it at offset
+    // 0x442), so the modern client's character-sheet "Critical Strike" row would show 0%
+    // unless the proxy computes it. Mirrors mangos-classic Player::UpdateSpellCritChance:
+    //   crit[school] = GetSpellCritFromIntellect()                    // base + INT/rate
+    //                + GetTotalAuraModifier(MOD_SPELL_CRIT_CHANCE)    // aura 57, all schools
+    //                + GetTotalAuraModifierByMiscMask(               // aura 71, school-specific
+    //                    MOD_SPELL_CRIT_CHANCE_SCHOOL, 1<<school);
+    //
+    // Aura sources walked: equipped items' ON_EQUIP triggered spells, active aura slots,
+    // and the player's spellbook (talent passives that the server CastSpell()s on self
+    // but doesn't always surface as visible auras — paladin Holy Power, mage Arcane
+    // Instability, druid Vengeance, etc.).
+    public static float[] ComputeSpellCritChance(byte playerClass, byte playerLevel,
+        int playerIntellect, int[] equippedItemIds, uint[] activeAuraSpellIds,
+        System.Collections.Generic.HashSet<uint> knownSpellIds)
+    {
+        var crit = new float[7];
+
+        if (playerClass == 0 || playerLevel == 0 || playerClass >= s_spellCritData.Length)
+            return crit;
+
+        var (cbase, rate) = s_spellCritData[playerClass];
+        float critFromInt = rate > 0f ? playerIntellect / rate : 0f;
+        float baseline = cbase + critFromInt;
+        for (int s = 0; s < 7; s++)
+            crit[s] = baseline;
+
+        // Equipment ON_EQUIP triggered spells.
+        for (int slot = 0; slot < equippedItemIds.Length; slot++)
+        {
+            int itemId = equippedItemIds[slot];
+            if (itemId <= 0) continue;
+            ItemTemplate? tmpl = GetItemTemplate((uint)itemId);
+            if (tmpl == null) continue;
+            for (int t = 0; t < tmpl.TriggeredSpellIds.Length; t++)
+            {
+                int sid = tmpl.TriggeredSpellIds[t];
+                if (sid <= 0 || tmpl.TriggeredSpellTypes[t] != 1) continue;
+                AccumulateCritAuras((uint)sid, crit);
+            }
+        }
+
+        // Active aura slots (raid buffs, set bonuses, applied talent passives).
+        foreach (var sid in activeAuraSpellIds)
+        {
+            if (sid != 0)
+                AccumulateCritAuras(sid, crit);
+        }
+
+        // Spellbook (talent passives the server CastSpell()s on self but may not surface
+        // as a visible aura). We trust SpellAuraEffects to filter — only the ~50 spells
+        // that have aura 57/71 effects contribute, the rest are no-ops.
+        if (knownSpellIds != null)
+        {
+            foreach (var sid in knownSpellIds)
+                AccumulateCritAuras(sid, crit);
+        }
+
+        return crit;
+    }
+
+    // JimsProxy: helper for ComputeSpellCritChance — adds aura 57 (all-schools) and
+    // aura 71 (per-school via miscValue mask) effects from the given spell id into the
+    // per-school crit array.
+    private static void AccumulateCritAuras(uint spellId, float[] crit)
+    {
+        if (!SpellAuraEffects.TryGetValue(spellId, out var effects))
+            return;
+
+        foreach (var eff in effects)
+        {
+            switch (eff.AuraType)
+            {
+                case 57: // SPELL_AURA_MOD_SPELL_CRIT_CHANCE — all schools
+                    for (int s = 0; s < 7; s++)
+                        crit[s] += eff.BasePoints;
+                    break;
+                case 71: // SPELL_AURA_MOD_SPELL_CRIT_CHANCE_SCHOOL — masked
+                    for (int s = 0; s < 7; s++)
+                    {
+                        if ((eff.MiscValue & (1 << s)) != 0)
+                            crit[s] += eff.BasePoints;
+                    }
+                    break;
+            }
+        }
+    }
+
+    // JimsProxy: synthesize the melee/ranged Hit Chance modifier for the active player.
+    // Vanilla 1.12 has no UiHitModifier-equivalent field, so the modern client's Ranged
+    // (and Melee) "Hit Chance" row stays at 0% unless we compute it. Mirrors mangos-classic
+    // Player::ApplyAura(SPELL_AURA_MOD_HIT_CHANCE) — sums aura 54 effects from equipped item
+    // ON_EQUIP triggered spells, active aura slots, and known-spell talents (e.g. Warrior /
+    // Druid Precision). Aura 54's BasePoints stores rank-1 (so a +1% trinket has BP=0); the
+    // CSV loader has already +1'd these to actual percentages, so we just sum directly.
+    public static float ComputeMeleeRangedHitModifier(int[] equippedItemIds,
+        uint[] activeAuraSpellIds, System.Collections.Generic.HashSet<uint> knownSpellIds)
+    {
+        float hit = 0f;
+
+        for (int slot = 0; slot < equippedItemIds.Length; slot++)
+        {
+            int itemId = equippedItemIds[slot];
+            if (itemId <= 0) continue;
+            ItemTemplate? tmpl = GetItemTemplate((uint)itemId);
+            if (tmpl == null) continue;
+            for (int t = 0; t < tmpl.TriggeredSpellIds.Length; t++)
+            {
+                int sid = tmpl.TriggeredSpellIds[t];
+                if (sid <= 0 || tmpl.TriggeredSpellTypes[t] != 1) continue;
+                hit += AccumulateHitAura((uint)sid);
+            }
+        }
+
+        foreach (var sid in activeAuraSpellIds)
+        {
+            if (sid != 0)
+                hit += AccumulateHitAura(sid);
+        }
+
+        if (knownSpellIds != null)
+        {
+            foreach (var sid in knownSpellIds)
+                hit += AccumulateHitAura(sid);
+        }
+
+        return hit;
+    }
+
+    private static float AccumulateHitAura(uint spellId)
+    {
+        if (!SpellAuraEffects.TryGetValue(spellId, out var effects))
+            return 0f;
+
+        float hit = 0f;
+        foreach (var eff in effects)
+        {
+            // SPELL_AURA_MOD_HIT_CHANCE — flat % melee+ranged hit. Aura 55 is the spell-hit
+            // counterpart and would feed UiSpellHitModifier, not handled here.
+            if (eff.AuraType == 54)
+                hit += eff.BasePoints;
+        }
+        return hit;
+    }
+
+    // JimsProxy: synthesize the Spell Hit modifier for the active player. Vanilla 1.12 has
+    // no UiSpellHitModifier-equivalent field, so the modern client's "Hit Chance" row in
+    // the Spell tab stays at 0% otherwise. Walks the same three sources as
+    // ComputeMeleeRangedHitModifier and sums aura 55 (SPELL_AURA_MOD_SPELL_HIT_CHANCE) —
+    // items "Increased Spell Hit Chance 1/2" (spells 23727/23729) and any talent passives
+    // applying it. Talent spell-hit aura 107 SPELLMOD with miscValue 16 (Mage Elemental
+    // Precision et al) is intentionally NOT included — the modern client computes those
+    // SPELLMOD contributions itself; including them here would double-count.
+    public static float ComputeSpellHitModifier(int[] equippedItemIds,
+        uint[] activeAuraSpellIds, System.Collections.Generic.HashSet<uint> knownSpellIds)
+    {
+        float hit = 0f;
+
+        for (int slot = 0; slot < equippedItemIds.Length; slot++)
+        {
+            int itemId = equippedItemIds[slot];
+            if (itemId <= 0) continue;
+            ItemTemplate? tmpl = GetItemTemplate((uint)itemId);
+            if (tmpl == null) continue;
+            for (int t = 0; t < tmpl.TriggeredSpellIds.Length; t++)
+            {
+                int sid = tmpl.TriggeredSpellIds[t];
+                if (sid <= 0 || tmpl.TriggeredSpellTypes[t] != 1) continue;
+                hit += AccumulateSpellHitAura((uint)sid);
+            }
+        }
+
+        foreach (var sid in activeAuraSpellIds)
+        {
+            if (sid != 0)
+                hit += AccumulateSpellHitAura(sid);
+        }
+
+        if (knownSpellIds != null)
+        {
+            foreach (var sid in knownSpellIds)
+                hit += AccumulateSpellHitAura(sid);
+        }
+
+        return hit;
+    }
+
+    private static float AccumulateSpellHitAura(uint spellId)
+    {
+        if (!SpellAuraEffects.TryGetValue(spellId, out var effects))
+            return 0f;
+
+        float hit = 0f;
+        foreach (var eff in effects)
+        {
+            if (eff.AuraType == 55) // SPELL_AURA_MOD_SPELL_HIT_CHANCE
+                hit += eff.BasePoints;
+        }
+        return hit;
+    }
+
+    // JimsProxy: shared accumulator for both equipment-triggered and active-aura paths in
+    // ComputeEquipmentSpellStats. Looks up SpellAuraEffects[spellId] and folds each relevant
+    // effect into the per-school damage array or the healing total.
+    private static void AccumulateSpellAuras(uint spellId, int[] damage, ref int healing,
+        ref bool anyHealing, ref bool anyDamage)
+    {
+        if (!SpellAuraEffects.TryGetValue(spellId, out var effects))
+            return;
+
+        foreach (var eff in effects)
+        {
+            switch (eff.AuraType)
+            {
+                case 13: // SPELL_AURA_MOD_DAMAGE_DONE
+                    for (int school = 0; school < 7; school++)
+                    {
+                        if ((eff.MiscValue & (1 << school)) != 0)
+                        {
+                            damage[school] += eff.BasePoints;
+                            anyDamage = true;
+                        }
+                    }
+                    break;
+                case 135: // SPELL_AURA_MOD_HEALING_DONE
+                    healing += eff.BasePoints;
+                    anyHealing = true;
+                    break;
+                // 79 MOD_DAMAGE_PCT_DONE, 115 MOD_HEALING, 118 MOD_HEALING_PCT —
+                // not synthesized into the flat fields; the percent fields would need
+                // their own ActivePlayerData destinations. Reserved for future.
+            }
         }
     }
 
@@ -4197,6 +4594,26 @@ public static partial class GameData
         public uint Language;
         public ushort[] Emotes = new ushort[3];
         public ushort[] EmoteDelays = new ushort[3];
+    }
+
+    // JimsProxy: a single APPLY_AURA effect from a vanilla spell, captured from the
+    // SpellAuraEffects1 CSV (vanilla DBC dump). Used to synthesize per-school spell damage
+    // and total spell healing from equipment-triggered passive auras. Aura type values match
+    // the standard SPELL_AURA_* enum (e.g. 13 = MOD_DAMAGE_DONE, 135 = MOD_HEALING_DONE).
+    public readonly struct SpellAuraEffect
+    {
+        public readonly byte EffectIndex;  // 0..2
+        public readonly short AuraType;    // SPELL_AURA_* (13, 79, 115, 118, 135, ...)
+        public readonly int BasePoints;    // adjusted (+1) base value, matching SpellEffectPoints convention
+        public readonly int MiscValue;     // school mask (for MOD_DAMAGE_DONE) or 0
+
+        public SpellAuraEffect(byte effectIndex, short auraType, int basePoints, int miscValue)
+        {
+            EffectIndex = effectIndex;
+            AuraType = auraType;
+            BasePoints = basePoints;
+            MiscValue = miscValue;
+        }
     }
 
     public sealed class ItemRecord
