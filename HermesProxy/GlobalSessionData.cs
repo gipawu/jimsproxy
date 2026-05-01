@@ -177,6 +177,7 @@ public sealed class GameSessionData
     public ConcurrentDictionary<(WowGuid128 caster, uint spellId), WowGuid128> OtherCasterActiveCastIds = new();
     //MIRASU - monotonic sequence used to make non-player CastIDs unique per cast.
     public int OtherCastSequenceCounter;
+    public int PlayerChildCastSequence;
     // Tracks last-seen UNIT_CHANNEL_SPELL per unit so we can synthesize
     // SMSG_SPELL_CHANNEL_START/UPDATE for observers (vanilla only sends
     // MSG_CHANNEL_START to the caster, not to nearby players).

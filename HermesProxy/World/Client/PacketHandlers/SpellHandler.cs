@@ -938,9 +938,20 @@ public partial class WorldClient
         }
         else
         {
-            // Player/pet caster: keep deterministic seed; HandleSpellStart/Go will overwrite
-            // with the unique pendingCast.ServerGUID via the PendingNormalCasts queue.
-            dbdata.CastID = WowGuid128.Create(HighGuidType703.Cast, SpellCastSource.Normal, (uint)gameState.CurrentMapId!, (uint)dbdata.SpellID, (ulong)dbdata.SpellID + dbdata.CasterUnit.GetCounter());
+            if (isSpellGo)
+            {
+                // Player/pet SPELL_GO: unique CastID per packet. Channeled tick spells
+                // (Arcane Missiles 7269) don't match PendingNormalCasts — without unique
+                // IDs every tick shares the same CastID and the client drops a missile.
+                // For casts that DO match, HandleSpellGo overwrites with ServerGUID anyway.
+                uint seq = (uint)Interlocked.Increment(ref gameState.PlayerChildCastSequence);
+                dbdata.CastID = WowGuid128.Create(HighGuidType703.Cast, SpellCastSource.Normal, (uint)gameState.CurrentMapId!, (uint)dbdata.SpellID, ((ulong)seq << 32) | (uint)((uint)dbdata.SpellID + dbdata.CasterUnit.GetCounter()));
+            }
+            else
+            {
+                // Player/pet SPELL_START: deterministic seed, overridden by ServerGUID on GO.
+                dbdata.CastID = WowGuid128.Create(HighGuidType703.Cast, SpellCastSource.Normal, (uint)gameState.CurrentMapId!, (uint)dbdata.SpellID, (ulong)dbdata.SpellID + dbdata.CasterUnit.GetCounter());
+            }
         }
 
         // JimsProxy: emit structured spell.cast event so we can diagnose spell-ID
