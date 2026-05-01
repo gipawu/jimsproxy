@@ -2221,6 +2221,14 @@ public partial class WorldClient
                         updateMaskArray[UNIT_FIELD_AURALEVELS + i / 4] ||
                         updateMaskArray[UNIT_FIELD_AURAAPPLICATIONS + i / 4])
                     {
+                        // JimsProxy (Rupture-DoT-Lingering-Icon): log every aura-slot touch on units
+                        // so we can see the exact packet timing of aura apply/remove vs SPELL_PERIODIC ticks.
+                        // Targeting Rupture-on-enemy lingering bug. Remove once root cause is confirmed.
+                        bool _maskAura = updateMaskArray[UNIT_FIELD_AURA + i];
+                        bool _maskLevels = updateMaskArray[UNIT_FIELD_AURALEVELS + i / 4];
+                        bool _maskApps = updateMaskArray[UNIT_FIELD_AURAAPPLICATIONS + i / 4];
+                        uint _slotSpellId = (_maskAura && updates.TryGetValue(UNIT_FIELD_AURA + i, out var _auraField)) ? _auraField.UInt32Value : 0;
+
                         AuraInfo aura = new AuraInfo();
                         aura.Slot = i;
                         aura.AuraData = ReadAuraSlot(i, guid, updates)!;
@@ -2228,13 +2236,47 @@ public partial class WorldClient
                         {
                             int durationLeft;
                             int durationFull;
-                            GetSession().GameState.GetAuraDuration(guid, i, out durationLeft, out durationFull);
+
+                            // JimsProxy (Rupture-DoT-Lingering-Icon): for vanilla CP-scaling
+                            // finishers, the snapshot must win over the cache. Each Rupture
+                            // recast can consume a different CP count and overwrites the
+                            // existing debuff with a new (potentially shorter) duration.
+                            // GetAuraDuration would return the previous cast's value, so a
+                            // 3 CP refresh after a 5 CP cast would inherit a stale 16 s.
+                            // Snapshot returns null for non-finishers (hot path bypasses).
+                            int? finisherMs = GetSession().GameState.TryGetPendingFinisherDurationMs(
+                                aura.AuraData.SpellID, guid);
+                            if (finisherMs is int snapMs && snapMs > 0)
+                            {
+                                durationFull = snapMs;
+                                durationLeft = snapMs;
+                                GetSession().GameState.StoreAuraDurationFull(guid, i, snapMs);
+                                GetSession().GameState.StoreAuraDurationLeft(guid, i, snapMs, Environment.TickCount);
+                            }
+                            else
+                            {
+                                GetSession().GameState.GetAuraDuration(guid, i, out durationLeft, out durationFull);
+                            }
+
                             if (durationLeft > 0 && durationFull > 0)
                             {
                                 aura.AuraData.Flags |= AuraFlagsModern.Duration;
                                 aura.AuraData.Duration = durationFull;
                                 aura.AuraData.Remaining = durationLeft;
                             }
+                            Framework.Logging.Log.Event("aura.slot.set", new
+                            {
+                                target_low = guid.GetCounter(),
+                                slot = i,
+                                spell_id = aura.AuraData.SpellID,
+                                slot_field_value = _slotSpellId,
+                                duration_full = durationFull,
+                                duration_left = durationLeft,
+                                mask_aura = _maskAura,
+                                mask_levels = _maskLevels,
+                                mask_apps = _maskApps,
+                                is_player_target = guid == GetSession().GameState.CurrentPlayerGuid,
+                            });
                             //MIRASU: Set NoCaster flag when caster lookup fails, or the 1.14.2 client's
                             //MIRASU: UI buff-bar treats the aura as malformed-for-display (icon hidden)
                             //MIRASU: even though the effect engine still applies stat mods from the spell
@@ -2260,6 +2302,30 @@ public partial class WorldClient
                         {
                             GetSession().GameState.ClearAuraDuration(guid, i);
                             GetSession().GameState.ClearAuraCaster(guid, i);
+                            Framework.Logging.Log.Event("aura.slot.cleared", new
+                            {
+                                target_low = guid.GetCounter(),
+                                slot = i,
+                                slot_field_value = _slotSpellId,
+                                mask_aura = _maskAura,
+                                mask_levels = _maskLevels,
+                                mask_apps = _maskApps,
+                                is_player_target = guid == GetSession().GameState.CurrentPlayerGuid,
+                            });
+                        }
+                        else
+                        {
+                            // levels or apps mask without UNIT_FIELD_AURA mask — slot likely already
+                            // empty server-side. Modern client never gets a clear for this case.
+                            Framework.Logging.Log.Event("aura.slot.skipped", new
+                            {
+                                target_low = guid.GetCounter(),
+                                slot = i,
+                                mask_aura = _maskAura,
+                                mask_levels = _maskLevels,
+                                mask_apps = _maskApps,
+                                is_player_target = guid == GetSession().GameState.CurrentPlayerGuid,
+                            });
                         }
                         if (aura.AuraData != null || updateMaskArray[UNIT_FIELD_AURA + i])
                             auraUpdate.Auras.Add(aura);
@@ -2546,7 +2612,14 @@ public partial class WorldClient
             int PLAYER_FIELD_COMBO_TARGET = LegacyVersion.GetUpdateField(PlayerField.PLAYER_FIELD_COMBO_TARGET);
             if (PLAYER_FIELD_COMBO_TARGET >= 0 && updateMaskArray[PLAYER_FIELD_COMBO_TARGET])
             {
-                updateData.ActivePlayerData.ComboTarget = GetGuidValue(updates, PlayerField.PLAYER_FIELD_COMBO_TARGET).To128(GetSession().GameState);
+                WowGuid128 newComboTarget = GetGuidValue(updates, PlayerField.PLAYER_FIELD_COMBO_TARGET).To128(GetSession().GameState);
+                updateData.ActivePlayerData.ComboTarget = newComboTarget;
+                // JimsProxy (Rupture-DoT-Lingering-Icon): vanilla 1.12 has no
+                // SMSG_UPDATE_COMBO_POINTS opcode; CP and combo target both come through
+                // PLAYER_FIELD_* unit-field updates. Mirror the value into our finisher
+                // snapshot cache so the SMSG_SPELL_GO snapshot path knows the real CP.
+                if (guid == GetSession().GameState.CurrentPlayerGuid)
+                    GetSession().GameState.CurrentComboTarget = newComboTarget;
             }
             int PLAYER_FIELD_KNOWN_TITLES = LegacyVersion.GetUpdateField(PlayerField.PLAYER_FIELD_KNOWN_TITLES);
             if (PLAYER_FIELD_KNOWN_TITLES >= 0)
@@ -3017,6 +3090,12 @@ public partial class WorldClient
                             powerUpdate.Powers.Add(new PowerUpdatePower(comboPoints, (byte)PowerType.ComboPoints));
                         updateData.UnitData.Power[powerSlot] = comboPoints;
                     }
+                    // JimsProxy (Rupture-DoT-Lingering-Icon): vanilla CP source — no
+                    // SMSG_UPDATE_COMBO_POINTS opcode exists in 1.12.1, so this is the
+                    // only place CurrentComboPoints gets refreshed for vanilla servers.
+                    // Cache regardless of class (non-rogue/druid will always read 0).
+                    if (guid == GetSession().GameState.CurrentPlayerGuid)
+                        GetSession().GameState.CurrentComboPoints = comboPoints;
                 }
                 else
                     updateData.ActivePlayerData.GrantableLevels = (byte)((updates[PLAYER_FIELD_BYTES].UInt32Value >> 8) & 0xFF);
