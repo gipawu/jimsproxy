@@ -1,4 +1,5 @@
-﻿using HermesProxy.Enums;
+﻿using Framework.Logging;
+using HermesProxy.Enums;
 using HermesProxy.World.Enums;
 using HermesProxy.World.Objects;
 using HermesProxy.World.Server.Packets;
@@ -463,6 +464,13 @@ public partial class WorldClient
                             itemData.Index = i;
                             itemData.Item.ItemID = realItemId;
 
+                            // PLAYER_VISIBLE_ITEM_X_PROPERTIES holds the random property/suffix ID
+                            // (signed int32 stored in uint32 — negative = ItemRandomSuffix.dbc, positive = ItemRandomProperties.dbc).
+                            // Without it, green "of the Bear/Owl/..." gear renders without its suffix on inspect.
+                            int propertiesIndex = PLAYER_VISIBLE_ITEM_1_0 + (offset - 4) + i * offset;
+                            if (updates.ContainsKey(propertiesIndex))
+                                itemData.Item.RandomPropertiesID = updates[propertiesIndex].UInt32Value;
+
                             uint finalEnchantId = packedEnchantId;
                             if (finalEnchantId == 0 &&
                                 GetSession().GameState.CachedPlayerEnchants.TryGetValue(inspect.DisplayInfo.GUID, out var cachedEnchants))
@@ -472,6 +480,15 @@ public partial class WorldClient
 
                             if (finalEnchantId != 0)
                                 itemData.Enchants.Add(new InspectEnchantData(finalEnchantId, 0));
+
+                            Log.Event("inspect.item", new
+                            {
+                                target = inspect.DisplayInfo.GUID.ToString(),
+                                slot = i,
+                                item_id = realItemId,
+                                random_property_id = (int)itemData.Item.RandomPropertiesID,
+                                enchant = finalEnchantId
+                            });
 
                             inspect.DisplayInfo.Items.Add(itemData);
                         }
