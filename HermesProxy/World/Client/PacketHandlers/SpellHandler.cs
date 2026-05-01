@@ -19,6 +19,13 @@ public partial class WorldClient
         SendKnownSpells spells = new SendKnownSpells();
         spells.InitialLogin = packet.ReadBool();
         ushort spellCount = packet.ReadUInt16();
+        // JimsProxy (vanilla synthesized spell crit): rebuild the known-spells set on every
+        // SMSG_SEND_KNOWN_SPELLS so the synthesis path can walk talent passive auras (Holy
+        // Power, Critical Mass, Tidal Mastery, etc.) that the legacy server doesn't surface
+        // as visible auras. InitialLogin == true sends the full list; subsequent updates may
+        // be deltas, so we don't clear unconditionally.
+        if (spells.InitialLogin)
+            GetSession().GameState.CurrentPlayerKnownSpells.Clear();
         for (ushort i = 0; i < spellCount; i++)
         {
             uint spellId;
@@ -27,6 +34,7 @@ public partial class WorldClient
             else
                 spellId = packet.ReadUInt16();
             spells.KnownSpells.Add(spellId);
+            GetSession().GameState.CurrentPlayerKnownSpells.Add(spellId);
             packet.ReadInt16();
         }
         SendPacketToClient(spells);
