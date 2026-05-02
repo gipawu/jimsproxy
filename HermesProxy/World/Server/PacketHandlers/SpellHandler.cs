@@ -238,10 +238,9 @@ public partial class WorldSocket
             // 1.12 client would fire these mid-cast-bar and mid-GCD, so we match that.
             if (!isOffGcd)
             {
-                // Hidden queue — duplicate presses during the RTT window after a held
-                // cast is forwarded. Client never received SpellPrepare for these, so
-                // no cleanup needed. Silent return prevents SpellPrepare from resetting
-                // the client's GCD sweep origin.
+                // Drop duplicate presses while a cast is started or in-flight.
+                // Send SpellPrepare + CastFailed(DontReport) to resolve the client's
+                // per-press pending button state without visible error toasts.
                 bool gateStarted = GetSession().GameState.HasStartedNormalCast();
                 bool gateInFlight = GetSession().GameState.HasInFlightNormalCastForSpell((uint)cast.Cast.SpellID);
                 if (gateStarted || gateInFlight)
@@ -253,6 +252,7 @@ public partial class WorldSocket
                         client_cast_id = cast.Cast.CastID.ToString(),
                         queue_depth = GetSession().GameState.PendingNormalCasts.Count,
                     });
+                    SendCastRequestFailed(castRequest, false, SpellCastResultClassic.DontReport);
                     return;
                 }
 
@@ -276,6 +276,7 @@ public partial class WorldSocket
                     var peeked = GetSession().GameState.PeekHeldGcdCast();
                     if (peeked != null && peeked.SpellId == cast.Cast.SpellID)
                     {
+                        SendCastRequestFailed(castRequest, false, SpellCastResultClassic.DontReport);
                         return;
                     }
 
@@ -291,8 +292,6 @@ public partial class WorldSocket
                             client_cast_id = castRequest.ClientGUID.ToString(),
                         });
 
-                        // Hidden queue — client never received SpellPrepare for the
-                        // displaced cast, so no cleanup needed.
                         if (displaced != null)
                         {
                             Log.Event("spell.held_displaced", new
@@ -303,6 +302,7 @@ public partial class WorldSocket
                                     ? Environment.TickCount64 - displaced.HeldAtTickMs
                                     : 0L,
                             });
+                            SendCastRequestFailed(displaced, false, SpellCastResultClassic.DontReport);
                         }
 
                         // Don't send SpellPrepare here — hide the queue from the client.
@@ -326,6 +326,7 @@ public partial class WorldSocket
                 // don't forward a duplicate — server would just reject with NOT_READY.
                 if (GetSession().GameState.ShouldDropLateSameSpell((uint)cast.Cast.SpellID))
                 {
+                    SendCastRequestFailed(castRequest, false, SpellCastResultClassic.DontReport);
                     return;
                 }
 
@@ -347,8 +348,9 @@ public partial class WorldSocket
                         displaced_spell_id = displaced?.SpellId ?? 0,
                         client_cast_id = castRequest.ClientGUID.ToString(),
                     });
-                    // Hidden queue — client never received SpellPrepare for displaced cast.
-                    // Don't send SpellPrepare — hide the queue from the client.
+                    if (displaced != null)
+                        SendCastRequestFailed(displaced, false, SpellCastResultClassic.DontReport);
+                    // Don't send SpellPrepare for the NEW hold — hide the queue from the client.
                     return;
                 }
 
@@ -471,8 +473,7 @@ public partial class WorldSocket
         castRequest.ServerGUID = WowGuid128.Create(HighGuidType703.Cast, SpellCastSource.Normal, (uint)GetSession().GameState.CurrentMapId!, use.Cast.SpellID, 10000 + use.Cast.CastID.GetCounter());
         castRequest.ItemGUID = use.CastItem;
 
-        // Hidden queue — duplicate item-use presses during the RTT window after
-        // a held cast is forwarded. Silent return for the same reason as CastSpell.
+        // Drop duplicate item-use presses. DontReport resolves button state silently.
         bool gateStarted = GetSession().GameState.HasStartedNormalCast();
         bool gateInFlight = GetSession().GameState.HasInFlightNormalCastForSpell((uint)use.Cast.SpellID);
         if (gateStarted || gateInFlight)
@@ -485,6 +486,7 @@ public partial class WorldSocket
                 item_guid = use.CastItem.ToString(),
                 queue_depth = GetSession().GameState.PendingNormalCasts.Count,
             });
+            SendCastRequestFailed(castRequest, false, SpellCastResultClassic.DontReport);
             return;
         }
 
@@ -517,8 +519,8 @@ public partial class WorldSocket
     void HandleCancelCast(CancelCast cast)
     {
         // JimsProxy (issue #43): if the client cancels while we have a held cast waiting for
-        // GCD expiry, drop the held cast so it doesn't fire after the cancel. Hidden queue —
-        // client never received SpellPrepare for the held cast, so no cleanup needed.
+        // GCD expiry, drop the held cast so it doesn't fire after the cancel. Resolve the
+        // client's button state with DontReport.
         ClientCastRequest? dropped = GetSession().GameState.CancelGcdHold();
         if (dropped != null)
         {
@@ -530,6 +532,7 @@ public partial class WorldSocket
                     ? Environment.TickCount64 - dropped.HeldAtTickMs
                     : 0L,
             });
+            SendCastRequestFailed(dropped, false, SpellCastResultClassic.DontReport);
         }
 
         WorldPacket packet = new WorldPacket(Opcode.CMSG_CANCEL_CAST);
