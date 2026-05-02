@@ -789,6 +789,21 @@ public partial class WorldClient
                     legacy_lookup_id = pendingCast.LegacySpellId,
                 });
             }
+
+            var gameStateAfter = GetSession().GameState;
+            if (!gameStateAfter.HasForwardedPendingCast())
+            {
+                var heldCast = gameStateAfter.TakeHeldCastIfReady();
+                if (heldCast != null)
+                {
+                    Log.Event("spell.held_fire_on_success", new
+                    {
+                        success_spell_id = spell.Cast.SpellID,
+                        held_spell_id = heldCast.SpellId,
+                    });
+                    gameStateAfter.OnGcdHeldCastFire?.Invoke(heldCast);
+                }
+            }
         }
         else if (GetSession().GameState.CurrentPlayerGuid == spell.Cast.CasterUnit &&
             GetSession().GameState.CurrentClientNextMeleeCast != null &&
