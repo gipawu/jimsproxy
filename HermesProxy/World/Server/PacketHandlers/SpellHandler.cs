@@ -240,11 +240,9 @@ public partial class WorldSocket
             {
                 // JimsProxy (Mount-Button-Stuck-Lit): drop re-clicks but resolve the modern
                 // client's tracking via the duplicate's own unique ClientGUID/ServerGUID. The
-                // earlier silent-drop approach (commit 8998c39) avoided dismissing the running
-                // cast bar but left the duplicate's action-button state pending forever. Sending
-                // SpellPrepare + CastFailed(DontReport) bound to the DUPLICATE's IDs releases the
-                // queued state without showing an error toast. The running cast's ServerCastID is
-                // distinct, so its cast bar should be unaffected.
+                // 1.14 client treats SpellInProgress as "overridden by newer cast" and releases
+                // the button's queued/lit state cleanly. The running cast's ServerCastID is
+                // distinct, so its cast bar is unaffected.
                 bool gateStarted = GetSession().GameState.HasStartedNormalCast();
                 bool gateInFlight = GetSession().GameState.HasInFlightNormalCastForSpell((uint)cast.Cast.SpellID);
                 if (gateStarted || gateInFlight)
@@ -256,7 +254,7 @@ public partial class WorldSocket
                         client_cast_id = cast.Cast.CastID.ToString(),
                         queue_depth = GetSession().GameState.PendingNormalCasts.Count,
                     });
-                    SendCastRequestFailed(castRequest, false, SpellCastResultClassic.DontReport);
+                    SendCastRequestFailed(castRequest, false);
                     return;
                 }
 
@@ -477,12 +475,9 @@ public partial class WorldSocket
 
         // JimsProxy (Mount-Button-Stuck-Lit): drop the duplicate USE_ITEM but resolve the modern
         // client's per-click tracking so the action button doesn't stay "queued/lit" forever.
-        // Bind SpellPrepare + CastFailed to the DUPLICATE's unique ClientGUID/ServerGUID (built
-        // a few lines above with `10000 + use.Cast.CastID.GetCounter()`); the running cast (if
-        // any) has its OWN distinct ServerCastID, so the modern client should resolve only the
-        // duplicate's tracking and leave the active cast bar alone. Reason=DontReport suppresses
-        // the "Another action is in progress" error toast — silent drop semantics, but now with
-        // the IDs the client needs to release the queued state.
+        // The 1.14 client treats SpellInProgress as "overridden by newer cast" and releases
+        // the button's queued/lit state cleanly. The running cast's ServerCastID is distinct,
+        // so the active cast bar is unaffected.
         bool gateStarted = GetSession().GameState.HasStartedNormalCast();
         bool gateInFlight = GetSession().GameState.HasInFlightNormalCastForSpell((uint)use.Cast.SpellID);
         if (gateStarted || gateInFlight)
@@ -495,7 +490,7 @@ public partial class WorldSocket
                 item_guid = use.CastItem.ToString(),
                 queue_depth = GetSession().GameState.PendingNormalCasts.Count,
             });
-            SendCastRequestFailed(castRequest, false, SpellCastResultClassic.DontReport);
+            SendCastRequestFailed(castRequest, false);
             return;
         }
 
