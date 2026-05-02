@@ -238,11 +238,10 @@ public partial class WorldSocket
             // 1.12 client would fire these mid-cast-bar and mid-GCD, so we match that.
             if (!isOffGcd)
             {
-                // JimsProxy (Mount-Button-Stuck-Lit): drop re-clicks but resolve the modern
-                // client's tracking via the duplicate's own unique ClientGUID/ServerGUID. The
-                // 1.14 client treats SpellInProgress as "overridden by newer cast" and releases
-                // the button's queued/lit state cleanly. The running cast's ServerCastID is
-                // distinct, so its cast bar is unaffected.
+                // Hidden queue — duplicate presses during the RTT window after a held
+                // cast is forwarded. Client never received SpellPrepare for these, so
+                // no cleanup needed. Silent return prevents SpellPrepare from resetting
+                // the client's GCD sweep origin.
                 bool gateStarted = GetSession().GameState.HasStartedNormalCast();
                 bool gateInFlight = GetSession().GameState.HasInFlightNormalCastForSpell((uint)cast.Cast.SpellID);
                 if (gateStarted || gateInFlight)
@@ -254,7 +253,6 @@ public partial class WorldSocket
                         client_cast_id = cast.Cast.CastID.ToString(),
                         queue_depth = GetSession().GameState.PendingNormalCasts.Count,
                     });
-                    SendCastRequestFailed(castRequest, false);
                     return;
                 }
 
@@ -473,11 +471,8 @@ public partial class WorldSocket
         castRequest.ServerGUID = WowGuid128.Create(HighGuidType703.Cast, SpellCastSource.Normal, (uint)GetSession().GameState.CurrentMapId!, use.Cast.SpellID, 10000 + use.Cast.CastID.GetCounter());
         castRequest.ItemGUID = use.CastItem;
 
-        // JimsProxy (Mount-Button-Stuck-Lit): drop the duplicate USE_ITEM but resolve the modern
-        // client's per-click tracking so the action button doesn't stay "queued/lit" forever.
-        // The 1.14 client treats SpellInProgress as "overridden by newer cast" and releases
-        // the button's queued/lit state cleanly. The running cast's ServerCastID is distinct,
-        // so the active cast bar is unaffected.
+        // Hidden queue — duplicate item-use presses during the RTT window after
+        // a held cast is forwarded. Silent return for the same reason as CastSpell.
         bool gateStarted = GetSession().GameState.HasStartedNormalCast();
         bool gateInFlight = GetSession().GameState.HasInFlightNormalCastForSpell((uint)use.Cast.SpellID);
         if (gateStarted || gateInFlight)
@@ -490,7 +485,6 @@ public partial class WorldSocket
                 item_guid = use.CastItem.ToString(),
                 queue_depth = GetSession().GameState.PendingNormalCasts.Count,
             });
-            SendCastRequestFailed(castRequest, false);
             return;
         }
 
