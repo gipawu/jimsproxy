@@ -967,6 +967,13 @@ public partial class WorldClient
         if (!isSpellGo || LegacyVersion.AddedInVersion(ClientVersionBuild.V2_0_1_6180))
             dbdata.CastTime = packet.ReadUInt32();
 
+        // Vanilla 1.12 SPELL_GO doesn't carry CastTime. Without a timestamp the
+        // 1.14 client chains GCD starts (new = old + 1500ms) instead of anchoring
+        // to server time, causing ~RTT drift per cast. Stamp with proxy time so the
+        // client's TIME_SYNC offset can convert it to local time.
+        if (isSpellGo && dbdata.CastTime == 0)
+            dbdata.CastTime = Time.GetMSTime();
+
         if (isSpellGo)
         {
             var hitCount = packet.ReadUInt8();
