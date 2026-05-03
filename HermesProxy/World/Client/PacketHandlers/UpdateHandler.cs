@@ -22,6 +22,25 @@ public partial class WorldClient
     void HandleDestroyObject(WorldPacket packet)
     {
         WowGuid128 guid = packet.ReadGuid().To128(GetSession().GameState);
+
+        // JimsProxy (mount-and-quest-diagnostics): capture cached entry/displayId BEFORE
+        // the cache eviction below so the bundle records what was being destroyed. Used
+        // to triage the Aean Swiftriver Outrunner cat-mount persistence bug — testers'
+        // summary of bundle 20260503-144300 found the cats are NOT MOUNTDISPLAYID values
+        // on the riders but separate Pet-high-GUID creature spawns (entry 4196). Without
+        // this event, we can't tell whether the legacy server ever sends a destroy for
+        // those mount GUIDs around aggro/death time.
+        int cachedEntry = GetSession().GameState.GetLegacyFieldValueInt32(guid, ObjectField.OBJECT_FIELD_ENTRY);
+        int cachedDisplayId = GetSession().GameState.GetLegacyFieldValueInt32(guid, UnitField.UNIT_FIELD_DISPLAYID);
+        Log.Event("object.destroy", new
+        {
+            guid = guid.ToString(),
+            high_type = guid.GetHighType().ToString(),
+            guid_entry = guid.GetEntry(),
+            cached_entry = cachedEntry,
+            cached_display_id = cachedDisplayId,
+        });
+
         lock (GetSession().GameState.ObjectCacheLock)
         {
             GetSession().GameState.ObjectCacheLegacy.Remove(guid);
@@ -310,6 +329,24 @@ public partial class WorldClient
             if (guid == GetSession().GameState.CurrentPlayerGuid)
                 continue;
             PrintString($"Guid = {objCount}", index, j);
+
+            // JimsProxy (mount-and-quest-diagnostics): per-GUID structured log for far/
+            // out-of-range removals, captured BEFORE cache eviction so cached entry and
+            // displayId survive into the bundle. Pairs with object.destroy to give a
+            // complete picture of how the legacy server removes objects from the client's
+            // view — needed to triage the Outrunner cat-mount persistence bug where the
+            // mount cats are independent creature spawns (entry 4196), not MOUNTDISPLAYID.
+            int cachedEntry = GetSession().GameState.GetLegacyFieldValueInt32(guid, ObjectField.OBJECT_FIELD_ENTRY);
+            int cachedDisplayId = GetSession().GameState.GetLegacyFieldValueInt32(guid, UnitField.UNIT_FIELD_DISPLAYID);
+            Log.Event("object.far_object", new
+            {
+                guid = guid.ToString(),
+                high_type = guid.GetHighType().ToString(),
+                guid_entry = guid.GetEntry(),
+                cached_entry = cachedEntry,
+                cached_display_id = cachedDisplayId,
+            });
+
             lock (GetSession().GameState.ObjectCacheLock)
             {
                 GetSession().GameState.ObjectCacheLegacy.Remove(guid);
