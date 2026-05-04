@@ -281,6 +281,21 @@ public sealed class ThreatTracker
         if (victim == default) return;
 
         AddThreat(victim, attacker, rawDamage);
+
+        if (_threatLists.TryGetValue(victim, out var list) &&
+            list.TryGetValue(attacker, out double newTotal))
+        {
+            Log.Event("threat.damage_added", new
+            {
+                attacker_low = attacker.GetCounter(),
+                attacker_is_player = attacker == _session.GameState.CurrentPlayerGuid,
+                victim_low = victim.GetCounter(),
+                damage = (long)rawDamage,
+                new_total = (long)newTotal,
+                threater_count = list.Count,
+            });
+        }
+
         EmitDirty();
     }
 
