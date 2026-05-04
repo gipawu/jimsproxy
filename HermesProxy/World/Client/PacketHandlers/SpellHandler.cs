@@ -915,6 +915,13 @@ public partial class WorldClient
         }
 
         SendPacketToClient(spell);
+
+        // JimsProxy threat translation: route Hunter / Pet / class abilities
+        // through the threat tracker so SMSG_THREAT_UPDATE reflects the cast.
+        // Done after SendPacketToClient so the SpellGo arrives first and any
+        // resulting THREAT_UPDATE follows it on the wire (matches the
+        // server-driven ordering the modern client expects).
+        GetSession().ThreatTracker.OnSpellCast(spell.Cast.CasterUnit, spell.Cast.SpellID, spell.Cast.HitTargets);
     }
 
     SpellCastData HandleSpellStartOrGo(WorldPacket packet, bool isSpellGo)

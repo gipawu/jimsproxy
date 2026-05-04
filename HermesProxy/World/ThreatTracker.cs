@@ -299,6 +299,20 @@ public sealed class ThreatTracker
         EmitDirty();
     }
 
+    // Called from SMSG_SPELL_GO observer for any spell cast that may modify
+    // threat (Distracting Shot, Disengage, Feign Death, Growl, Cower, ...).
+    // Routes to ThreatModules' per-spell-id handler. Auto-flushes the dirty
+    // set so the threat-update SMSG goes out alongside the SpellGo packet.
+    public void OnSpellCast(WowGuid128 caster, int spellId, IList<WowGuid128> hitTargets)
+    {
+        if (caster == default) return;
+
+        if (!ThreatModules.TryHandle(this, _session, spellId, caster, hitTargets))
+            return;
+
+        EmitDirty();
+    }
+
     // True if the given GUID is the local player or a unit they currently own
     // (pet, totem, guardian). Pet ownership is read from UNIT_FIELD_SUMMONEDBY
     // on the unit's cached fields, which the legacy server populates and the
