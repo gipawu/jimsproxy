@@ -1537,16 +1537,13 @@ public partial class WorldClient
         // once the lingering bug is rooted.
         if (Framework.Settings.DebugOutput)
         {
-            if (Framework.Settings.DebugOutput)
+            Framework.Logging.Log.Event("aura.tick", new
             {
-                Framework.Logging.Log.Event("aura.tick", new
-                {
-                    target_low = spell.TargetGUID.GetCounter(),
-                    caster_low = spell.CasterGUID.GetCounter(),
-                    spell_id = spell.SpellID,
-                    caster_is_player = spell.CasterGUID == GetSession().GameState.CurrentPlayerGuid,
-                });
-            }
+                target_low = spell.TargetGUID.GetCounter(),
+                caster_low = spell.CasterGUID.GetCounter(),
+                spell_id = spell.SpellID,
+                caster_is_player = spell.CasterGUID == GetSession().GameState.CurrentPlayerGuid,
+            });
         }
 
         var count = packet.ReadInt32();

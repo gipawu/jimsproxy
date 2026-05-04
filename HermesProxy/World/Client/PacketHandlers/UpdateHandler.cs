@@ -810,13 +810,10 @@ public partial class WorldClient
                 {
                     if (Framework.Settings.DebugOutput)
                     {
-                        if (Framework.Settings.DebugOutput)
+                        Framework.Logging.Log.Event("hover.detect_fixedz_flag", new
                         {
-                            Framework.Logging.Log.Event("hover.detect_fixedz_flag", new
-                            {
-                                guid = guid.ToString(),
-                            });
-                        }
+                            guid = guid.ToString(),
+                        });
                     }
                 }
             }
@@ -2289,22 +2286,19 @@ public partial class WorldClient
                             }
                             if (Framework.Settings.DebugOutput)
                             {
-                                if (Framework.Settings.DebugOutput)
+                                Framework.Logging.Log.Event("aura.slot.set", new
                                 {
-                                    Framework.Logging.Log.Event("aura.slot.set", new
-                                    {
-                                        target_low = guid.GetCounter(),
-                                        slot = i,
-                                        spell_id = aura.AuraData.SpellID,
-                                        slot_field_value = _slotSpellId,
-                                        duration_full = durationFull,
-                                        duration_left = durationLeft,
-                                        mask_aura = _maskAura,
-                                        mask_levels = _maskLevels,
-                                        mask_apps = _maskApps,
-                                        is_player_target = guid == GetSession().GameState.CurrentPlayerGuid,
-                                    });
-                                }
+                                    target_low = guid.GetCounter(),
+                                    slot = i,
+                                    spell_id = aura.AuraData.SpellID,
+                                    slot_field_value = _slotSpellId,
+                                    duration_full = durationFull,
+                                    duration_left = durationLeft,
+                                    mask_aura = _maskAura,
+                                    mask_levels = _maskLevels,
+                                    mask_apps = _maskApps,
+                                    is_player_target = guid == GetSession().GameState.CurrentPlayerGuid,
+                                });
                             }
                             //MIRASU: Set NoCaster flag when caster lookup fails, or the 1.14.2 client's
                             //MIRASU: UI buff-bar treats the aura as malformed-for-display (icon hidden)
@@ -2333,19 +2327,16 @@ public partial class WorldClient
                             GetSession().GameState.ClearAuraCaster(guid, i);
                             if (Framework.Settings.DebugOutput)
                             {
-                                if (Framework.Settings.DebugOutput)
+                                Framework.Logging.Log.Event("aura.slot.cleared", new
                                 {
-                                    Framework.Logging.Log.Event("aura.slot.cleared", new
-                                    {
-                                        target_low = guid.GetCounter(),
-                                        slot = i,
-                                        slot_field_value = _slotSpellId,
-                                        mask_aura = _maskAura,
-                                        mask_levels = _maskLevels,
-                                        mask_apps = _maskApps,
-                                        is_player_target = guid == GetSession().GameState.CurrentPlayerGuid,
-                                    });
-                                }
+                                    target_low = guid.GetCounter(),
+                                    slot = i,
+                                    slot_field_value = _slotSpellId,
+                                    mask_aura = _maskAura,
+                                    mask_levels = _maskLevels,
+                                    mask_apps = _maskApps,
+                                    is_player_target = guid == GetSession().GameState.CurrentPlayerGuid,
+                                });
                             }
                         }
                         else
@@ -2354,18 +2345,15 @@ public partial class WorldClient
                             // empty server-side. Modern client never gets a clear for this case.
                             if (Framework.Settings.DebugOutput)
                             {
-                                if (Framework.Settings.DebugOutput)
+                                Framework.Logging.Log.Event("aura.slot.skipped", new
                                 {
-                                    Framework.Logging.Log.Event("aura.slot.skipped", new
-                                    {
-                                        target_low = guid.GetCounter(),
-                                        slot = i,
-                                        mask_aura = _maskAura,
-                                        mask_levels = _maskLevels,
-                                        mask_apps = _maskApps,
-                                        is_player_target = guid == GetSession().GameState.CurrentPlayerGuid,
-                                    });
-                                }
+                                    target_low = guid.GetCounter(),
+                                    slot = i,
+                                    mask_aura = _maskAura,
+                                    mask_levels = _maskLevels,
+                                    mask_apps = _maskApps,
+                                    is_player_target = guid == GetSession().GameState.CurrentPlayerGuid,
+                                });
                             }
                         }
                         if (aura.AuraData != null || updateMaskArray[UNIT_FIELD_AURA + i])
