@@ -1303,6 +1303,9 @@ public partial class WorldClient
         }
 
         SendPacketToClient(spell);
+
+        // Threat translation: feed spell damage (direct hit) into the tracker.
+        GetSession().ThreatTracker.OnDamage(spell.CasterGUID, spell.TargetGUID, spell.Damage);
     }
 
     [PacketHandler(Opcode.SMSG_SPELL_EXECUTE_LOG)]
@@ -1658,6 +1661,23 @@ public partial class WorldClient
             }
         }
         SendPacketToClient(spell);
+
+        // Threat translation: feed periodic damage (DoT ticks) into the tracker.
+        // Sum the damage portion of all PeriodicDamage / PeriodicDamagePercent
+        // effect entries — heals and other auras don't count as damage threat.
+        double dotDamage = 0;
+        foreach (var effect in spell.Effects)
+        {
+            if (effect.Effect == (uint)AuraType.PeriodicDamage ||
+                effect.Effect == (uint)AuraType.PeriodicDamagePercent)
+            {
+                dotDamage += effect.Amount;
+            }
+        }
+        if (dotDamage > 0)
+        {
+            GetSession().ThreatTracker.OnDamage(spell.CasterGUID, spell.TargetGUID, dotDamage);
+        }
     }
 
     [PacketHandler(Opcode.SMSG_SPELL_ENERGIZE_LOG)]
@@ -1734,6 +1754,12 @@ public partial class WorldClient
 
         spell.SchoolMask = school;
         SendPacketToClient(spell);
+
+        // Threat translation: damage-shield reflects (Thorns, Retribution Aura,
+        // Lightning Shield) generate threat to the attacker who hit us. The
+        // CasterGUID here is whoever owns the shield (us or our pet), the
+        // VictimGUID is the attacker who got reflected on.
+        GetSession().ThreatTracker.OnDamage(spell.CasterGUID, spell.VictimGUID, spell.Damage);
     }
 
     [PacketHandler(Opcode.SMSG_ENVIRONMENTAL_DAMAGE_LOG)]

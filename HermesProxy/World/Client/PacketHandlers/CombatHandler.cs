@@ -140,6 +140,10 @@ public partial class WorldClient
         }
 
         SendPacketToClient(attack);
+
+        // Threat translation: feed melee swing damage into the threat tracker.
+        // Vanilla damage threat is 1.0 × raw damage, no school weighting.
+        GetSession().ThreatTracker.OnDamage(attack.AttackerGUID, attack.VictimGUID, attack.Damage);
     }
     [PacketHandler(Opcode.SMSG_ATTACKSWING_NOTINRANGE)]
     void HandleAttackSwingNotInRange(WorldPacket packet)
