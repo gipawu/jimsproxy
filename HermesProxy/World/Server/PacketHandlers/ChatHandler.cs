@@ -398,7 +398,7 @@ public partial class WorldSocket
         update.ThreatList.Add(new ThreatInfo
         {
             ThreaterGUID = playerGuid,
-            Threat = 1234500u,
+            Threat = 1234500L,
         });
         session.WorldClient.SendPacketToClient(update);
 
@@ -413,7 +413,7 @@ public partial class WorldSocket
         highest.ThreatList.Add(new ThreatInfo
         {
             ThreaterGUID = playerGuid,
-            Threat = 1234500u,
+            Threat = 1234500L,
         });
         session.WorldClient.SendPacketToClient(highest);
 

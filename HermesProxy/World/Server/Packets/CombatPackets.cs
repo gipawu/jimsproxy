@@ -348,13 +348,24 @@ class PartyKillLog : ServerPacket, ISpanWritable
 // event) populate, which in turn drives addons like Details TinyThreat and
 // Threat Plates without any addon-side modification.
 //
-// Wire format follows TrinityCore/CypherCore convention. Note that the modern
-// protocol packs threat values × 100 (Classic Era addons divide by 100 on read),
-// so emitters must scale up before writing.
+// Wire format follows TrinityCore Classic 1.14 convention:
+//   PackedGuid128 unitGUID
+//   uint32 count
+//   foreach threater:
+//     PackedGuid128 threaterGUID
+//     int64 threat  <-- 8 BYTES, not 4. Modern protocol uses int64 even though
+//                       practical threat values fit in 32 bits; reading 4 here
+//                       causes the client to gobble the next entry's GUID-mask
+//                       bytes into the high dword and produce billions-scale
+//                       garbage values. Verified against TrinityCore master
+//                       and Frostshake/TrinityCoreClassic 1.14.0.40618.
+//
+// Note that the modern protocol packs threat values × 100 (Classic Era addons
+// divide by 100 on read), so emitters must scale up before writing.
 public class ThreatInfo
 {
     public WowGuid128 ThreaterGUID;
-    public uint Threat; // raw threat × 100
+    public long Threat; // raw threat × 100, on-wire int64
 }
 
 public class ThreatUpdatePkt : ServerPacket
@@ -368,7 +379,7 @@ public class ThreatUpdatePkt : ServerPacket
         foreach (var info in ThreatList)
         {
             _worldPacket.WritePackedGuid128(info.ThreaterGUID);
-            _worldPacket.WriteUInt32(info.Threat);
+            _worldPacket.WriteInt64(info.Threat);
         }
     }
 
@@ -388,7 +399,7 @@ public class HighestThreatUpdatePkt : ServerPacket
         foreach (var info in ThreatList)
         {
             _worldPacket.WritePackedGuid128(info.ThreaterGUID);
-            _worldPacket.WriteUInt32(info.Threat);
+            _worldPacket.WriteInt64(info.Threat);
         }
     }
 

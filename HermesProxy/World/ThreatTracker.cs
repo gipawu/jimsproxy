@@ -324,15 +324,16 @@ public sealed class ThreatTracker
         return summonedBy128 == playerGuid;
     }
 
-    private static uint ToWireThreat(double rawThreat)
+    private static long ToWireThreat(double rawThreat)
     {
-        // Modern protocol packs threat × 100. Classic Era addons divide back
-        // down on read (verified in Details_TinyThreat.lua). Clamp to uint
-        // range to avoid wrap if some absurd encounter happens.
+        // Modern protocol packs threat × 100 and writes int64 (8 bytes — see
+        // CombatPackets.cs comment). Classic Era addons divide by 100 on read
+        // (verified in Details_TinyThreat.lua). Clamp to long range; practical
+        // values are well within 32 bits but the wire field is 64.
         double scaled = rawThreat * 100.0;
         if (scaled <= 0) return 0;
-        if (scaled >= uint.MaxValue) return uint.MaxValue;
-        return (uint)scaled;
+        if (scaled >= long.MaxValue) return long.MaxValue;
+        return (long)scaled;
     }
 
     private void SendToClient(ServerPacket packet)
