@@ -379,6 +379,63 @@ public sealed class ThreatTracker
         EmitDirty();
     }
 
+    // Phase 7 — heal threat. Vanilla heal threat is 0.5 × effective heal,
+    // distributed evenly across every mob currently in combat with the heal
+    // target (i.e., every mob whose threater list contains healTarget).
+    //
+    // Caveat: we only know about mobs WE have engaged. If a pure healer
+    // never deals damage, the mobs they're "supporting" never enter our
+    // threat list, so heal threat won't fire for them. Group-sync threat
+    // (a future phase) is the proper fix; until then, the limitation is
+    // identical to the rest of the system — heal threat works for tanks,
+    // off-healers who DPS, and self-heals while in combat.
+    public void OnHeal(WowGuid128 healer, WowGuid128 healTarget, int spellId, double effectiveHeal)
+    {
+        if (effectiveHeal <= 0) return;
+        if (!IsLocalThreater(healer)) return;
+        if (healTarget == default) return;
+
+        // Collect mobs whose threater list contains the heal target.
+        List<WowGuid128>? mobsThreateningTarget = null;
+        foreach (var (mob, list) in _threatLists)
+        {
+            if (list.ContainsKey(healTarget))
+            {
+                mobsThreateningTarget ??= new List<WowGuid128>();
+                mobsThreateningTarget.Add(mob);
+            }
+        }
+
+        if (mobsThreateningTarget == null || mobsThreateningTarget.Count == 0)
+        {
+            // Healed someone we don't know is in combat — drop. Avoids
+            // putting threat on every mob we've ever fought just because we
+            // healed a friendly out of nowhere.
+            return;
+        }
+
+        double passiveModifier = GetPassiveModifier(healer);
+        double totalThreat = effectiveHeal * 0.5 * passiveModifier;
+        double threatPerMob = totalThreat / mobsThreateningTarget.Count;
+
+        foreach (var mob in mobsThreateningTarget)
+            AddThreat(mob, healer, threatPerMob);
+
+        Log.Event("threat.heal_added", new
+        {
+            healer_low = healer.GetCounter(),
+            heal_target_low = healTarget.GetCounter(),
+            spell_id = spellId,
+            effective_heal = (long)effectiveHeal,
+            passive_mod = passiveModifier,
+            mobs_split = mobsThreateningTarget.Count,
+            threat_per_mob = (long)threatPerMob,
+            total_threat = (long)totalThreat,
+        });
+
+        EmitDirty();
+    }
+
     // Called from SMSG_SPELL_GO observer for any spell cast that may modify
     // threat (Distracting Shot, Disengage, Feign Death, Growl, Cower, ...).
     // Routes to ThreatModules' per-spell-id handler. Auto-flushes the dirty

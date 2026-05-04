@@ -1514,6 +1514,15 @@ public partial class WorldClient
         });
 
         SendPacketToClient(spell);
+
+        // Threat translation: heal threat = 0.5 x effective heal, distributed
+        // across every mob in combat with the heal target. Overheal generates
+        // no threat — feed only the effective amount.
+        long effectiveHeal = (long)spell.HealAmount - (long)spell.OverHeal;
+        if (effectiveHeal > 0)
+        {
+            GetSession().ThreatTracker.OnHeal(spell.CasterGUID, spell.TargetGUID, (int)spell.SpellID, effectiveHeal);
+        }
     }
 
     // Computes overhealing for a heal event by looking up the target's current HP
@@ -1673,8 +1682,9 @@ public partial class WorldClient
 
         // Threat translation: feed periodic damage (DoT ticks) into the tracker.
         // Sum the damage portion of all PeriodicDamage / PeriodicDamagePercent
-        // effect entries — heals and other auras don't count as damage threat.
+        // effect entries; heal ticks generate heal threat instead.
         double dotDamage = 0;
+        double hotHeal = 0;
         foreach (var effect in spell.Effects)
         {
             if (effect.Effect == (uint)AuraType.PeriodicDamage ||
@@ -1682,10 +1692,21 @@ public partial class WorldClient
             {
                 dotDamage += effect.Amount;
             }
+            else if (effect.Effect == (uint)AuraType.PeriodicHeal)
+            {
+                hotHeal += effect.Amount;
+            }
         }
         if (dotDamage > 0)
         {
             GetSession().ThreatTracker.OnDamage(spell.CasterGUID, spell.TargetGUID, (int)spell.SpellID, dotDamage);
+        }
+        if (hotHeal > 0)
+        {
+            // HoT ticks don't carry overheal info on the wire, so we feed
+            // the raw amount. Slight overcount when the target is at max hp;
+            // acceptable at this stage.
+            GetSession().ThreatTracker.OnHeal(spell.CasterGUID, spell.TargetGUID, (int)spell.SpellID, hotHeal);
         }
     }
 
