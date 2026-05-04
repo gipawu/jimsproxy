@@ -214,6 +214,7 @@ public partial class WorldSocket
         SendConnectToInstance(ConnectToSerial.WorldAttempt1);
         GetSession().GameState.IsConnectedToInstance = true;
         GetSession().GameState.IsFirstEnterWorld = true;
+        GetSession().ClearLogoutIntentional();
         GetSession().GameState.CurrentPlayerGuid = playerLogin.Guid;
         GetSession().GameState.CurrentPlayerInfo = GetSession().GameState.OwnCharacters.Single(x => x.CharacterGuid == playerLogin.Guid);
         GetSession().GameState.CurrentPlayerStorage.LoadCurrentPlayer();
@@ -235,6 +236,7 @@ public partial class WorldSocket
     [PacketHandler(Opcode.CMSG_LOGOUT_REQUEST)]
     void HandleLogoutRequest(LogoutRequest logoutRequest)
     {
+        GetSession().SetLogoutIntentional();
         WorldPacket packet = new WorldPacket(Opcode.CMSG_LOGOUT_REQUEST);
         SendPacketToServer(packet);
     }
