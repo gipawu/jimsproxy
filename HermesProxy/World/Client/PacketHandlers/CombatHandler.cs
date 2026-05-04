@@ -197,5 +197,10 @@ public partial class WorldClient
         log.Player = packet.ReadGuid().To128(GetSession().GameState);
         log.Victim = packet.ReadGuid().To128(GetSession().GameState);
         SendPacketToClient(log);
+
+        // Mob just died — drop its threat list immediately so the modern
+        // client's threat APIs go quiet on this unit instead of waiting for
+        // the corpse-despawn SMSG_DESTROY_OBJECT.
+        GetSession().ThreatTracker.ClearMob(log.Victim);
     }
 }
