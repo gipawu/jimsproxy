@@ -110,6 +110,52 @@ public sealed class ThreatTracker
         }
     }
 
+    // Bring threater up to the current top of mob's list (taunt semantics).
+    // Used by Warrior Taunt, Mocking Blow, Druid Growl. If the threater is
+    // already at or above the top, no-op. Marks dirty on success so the next
+    // EmitDirty pushes both the changed value and the new HIGHEST_THREAT_UPDATE.
+    public void SetToTop(WowGuid128 mob, WowGuid128 threater)
+    {
+        if (mob == default || threater == default) return;
+        if (!_threatLists.TryGetValue(mob, out var list))
+        {
+            list = new Dictionary<WowGuid128, double>();
+            _threatLists[mob] = list;
+        }
+
+        double topThreat = 0;
+        foreach (var v in list.Values)
+        {
+            if (v > topThreat) topThreat = v;
+        }
+
+        list.TryGetValue(threater, out double myThreat);
+        if (myThreat >= topThreat) return;
+
+        list[threater] = topThreat;
+        _dirty.Add(mob);
+    }
+
+    // Add (or subtract) flat threat across every mob the threater is currently
+    // tracked on. Used for buffs / utility casts that bump aggro on every mob
+    // already in combat with the player (Cleanse, Remove Lesser Curse, etc.).
+    // No-op for mobs the threater isn't already on — vanilla doesn't generate
+    // threat against unrelated mobs from these casts.
+    public void AddThreatToAllMobs(WowGuid128 threater, double amount)
+    {
+        if (threater == default || amount == 0) return;
+
+        foreach (var (mob, list) in _threatLists)
+        {
+            if (!list.TryGetValue(threater, out double existing))
+                continue;
+            double updated = existing + amount;
+            if (updated < 0) updated = 0;
+            list[threater] = updated;
+            _dirty.Add(mob);
+        }
+    }
+
     // Mob died, ran far away, evaded, etc. Remove its threat list entirely
     // and emit SMSG_THREAT_CLEAR so the modern client knows to drop it from
     // the threat APIs.
