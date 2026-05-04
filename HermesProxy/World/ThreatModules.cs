@@ -34,7 +34,17 @@ internal static class ThreatModules
         WowGuid128 caster,
         IList<WowGuid128> hitTargets);
 
-    private static readonly Dictionary<int, ThreatHandler> Handlers = BuildHandlers();
+    // Built lazily via the static constructor so field initializers for the
+    // per-spell amount dictionaries (declared further down in the file) have
+    // already run by the time BuildHandlers reads them. Inline-initializing
+    // this field would run BuildHandlers FIRST (lexical order), which would
+    // NRE on the still-null amount dictionaries.
+    private static readonly Dictionary<int, ThreatHandler> Handlers;
+
+    static ThreatModules()
+    {
+        Handlers = BuildHandlers();
+    }
 
     public static bool TryHandle(
         ThreatTracker tracker,
