@@ -230,6 +230,26 @@ internal static class ThreatModules
         [11303] = -600, [25302] = -800,
     };
 
+    // Warrior Demoralizing Shout — demoShoutFactor = 43/54.
+    private static readonly Dictionary<int, double> DemoralizingShoutAmount = new()
+    {
+        [1160]  = 43.0 / 54.0 * 14,
+        [6190]  = 43.0 / 54.0 * 24,
+        [11554] = 43.0 / 54.0 * 34,
+        [11555] = 43.0 / 54.0 * 44,
+        [11556] = 43,
+    };
+
+    // Druid Demoralizing Roar — flat per rank.
+    private static readonly Dictionary<int, double> DemoralizingRoarAmount = new()
+    {
+        [99]   = 9,
+        [1735] = 15,
+        [9490] = 20,
+        [9747] = 30,
+        [9898] = 39,
+    };
+
     // -----------------------------------------------------------------------
     // Generic helpers — parametrize the common shapes so each ability boils
     // down to one entry in the registry.
@@ -249,6 +269,29 @@ internal static class ThreatModules
             {
                 spell_id = spellId,
                 target_low = target.GetCounter(),
+                amount,
+            });
+        };
+
+    // For abilities that apply the same flat threat to every mob they hit
+    // (Demoralizing Shout, Demoralizing Roar, etc.). Lib treats these as
+    // MobDebuffHandlers — fires once per target when the debuff lands. Our
+    // approximation is to iterate the SMSG_SPELL_GO HitTargets list, which
+    // the legacy server populates only with mobs that didn't resist.
+    private static ThreatHandler PlayerMultiTargetFlat(string eventTag, Dictionary<int, double> amounts)
+        => (tracker, session, spellId, caster, hitTargets) =>
+        {
+            if (caster != session.GameState.CurrentPlayerGuid) return;
+            if (hitTargets.Count == 0) return;
+            if (!amounts.TryGetValue(spellId, out double amount)) return;
+
+            foreach (var target in hitTargets)
+                tracker.AddModifiedThreat(target, caster, amount);
+
+            Log.Event("threat.spell." + eventTag, new
+            {
+                spell_id = spellId,
+                target_count = hitTargets.Count,
                 amount,
             });
         };
@@ -402,6 +445,14 @@ internal static class ThreatModules
 
         // Paladin
         map[4987] = PlayerAddToAllMobs("cleanse", 40);
+
+        // Warrior Demoralizing Shout — multi-target debuff threat.
+        var demoShout = PlayerMultiTargetFlat("demoralizing_shout", DemoralizingShoutAmount);
+        foreach (var id in DemoralizingShoutAmount.Keys) map[id] = demoShout;
+
+        // Druid Demoralizing Roar — multi-target debuff threat.
+        var demoRoar = PlayerMultiTargetFlat("demoralizing_roar", DemoralizingRoarAmount);
+        foreach (var id in DemoralizingRoarAmount.Keys) map[id] = demoRoar;
 
         return map;
     }
