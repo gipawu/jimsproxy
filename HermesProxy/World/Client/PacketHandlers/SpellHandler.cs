@@ -488,7 +488,6 @@ public partial class WorldClient
 
         WowGuid128 castId;
         uint spellVisual;
-        bool dequeued = false;
         bool wasStarted = false;
         bool foundActiveCastId = false;
         // Local player/pet: PEEK (don't dequeue) — CAST_FAILED arrives ~5ms later and
@@ -586,7 +585,6 @@ public partial class WorldClient
             reason,
             isCaster = GetSession().GameState.CurrentPlayerGuid == casterUnit,
             isPetCaster = GetSession().GameState.CurrentPetGuid == casterUnit,
-            dequeued,
             wasStarted,
             foundActiveCastId,
             sentInterruptLog,
