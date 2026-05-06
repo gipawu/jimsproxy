@@ -129,7 +129,10 @@ public partial class BnetServices
 
         var realm = GetSession().RealmManager.GetRealms().FirstOrDefault(r => r.Name == lastPlayedChar.realmName && !r.Flags.HasFlag(RealmFlags.Offline));
         if (realm == null)
-            return BattlenetRpcErrorCode.UtilServerFailedToSerializeResponse;
+        {
+            GetSession().AccountMetaDataMgr.InvalidateLastSelectedCharacter();
+            return BattlenetRpcErrorCode.Ok;
+        }
 
         byte[] compressedRealmEntry = GetSession().RealmManager.GetCompressdRealmEntryJSON(realm, GetSession().Build);
         if (compressedRealmEntry.Length == 0)
@@ -148,7 +151,7 @@ public partial class BnetServices
         if (GetSession().GameAccountInfo == null)
             return BattlenetRpcErrorCode.UserServerBadWowAccount;
 
-        if (!GetSession().AuthClient.IsConnected())
+        if (!GetSession().AuthClient.IsConnected() && !GetSession().RealmManager.GetRealms().Any())
             return BattlenetRpcErrorCode.UtilServerMissingRealmList;
 
         string subRegionId = "";
