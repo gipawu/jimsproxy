@@ -59,7 +59,7 @@ public partial class WorldClient
     // specific opcode (parser bug), or mid-flight on a known packet.
     Opcode _lastInboundOpcode;
     uint _lastInboundOpcodeRaw;
-    int _lastInboundOpcodeTick;
+    volatile int _lastInboundOpcodeTick;
 
     // packet order is not always the same as new client, sometimes we need to delay packet until another one
     Dictionary<Opcode, List<WorldPacket>> _delayedPacketsToServer = null!;

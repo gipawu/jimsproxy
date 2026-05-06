@@ -1597,7 +1597,7 @@ public class GlobalSessionData
     // (CMSG_ENUM_CHARACTERS / CMSG_QUERY_PLAYER_NAME / etc.) is forwarded over
     // the same WorldClient and needs it alive until the user picks a char.
     // Cleared after the recreate succeeds.
-    public bool WorldClientNeedsRecreateOnNextLogin;
+    public volatile bool WorldClientNeedsRecreateOnNextLogin;
     public SniffFile ModernSniff = null!;
 
     public Dictionary<string, WowGuid128> GuildsByName = [];
