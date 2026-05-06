@@ -1,4 +1,5 @@
 ﻿using Framework.Constants;
+using Framework.Logging;
 using HermesProxy.Enums;
 using HermesProxy.World;
 using HermesProxy.World.Enums;
@@ -32,20 +33,41 @@ public partial class WorldSocket
     [PacketHandler(Opcode.CMSG_ACTIVATE_TAXI)]
     void HandleActivateTaxi(ActivateTaxi taxi)
     {
+        uint fromNode = GetSession().GameState.CurrentTaxiNode;
+        bool direct = TaxiPathExist(fromNode, taxi.Node);
+
         // direct path exist
-        if (TaxiPathExist(GetSession().GameState.CurrentTaxiNode, taxi.Node))
+        if (direct)
         {
             WorldPacket packet = new WorldPacket(Opcode.CMSG_ACTIVATE_TAXI);
             packet.WriteGuid(taxi.FlightMaster.To64());
-            packet.WriteUInt32(GetSession().GameState.CurrentTaxiNode);
+            packet.WriteUInt32(fromNode);
             packet.WriteUInt32(taxi.Node);
             SendPacketToServer(packet);
+            Log.Event("taxi.activate_requested", new
+            {
+                flight_master = taxi.FlightMaster.ToString(),
+                from_node = fromNode,
+                to_node = taxi.Node,
+                routing = "direct",
+                hop_count = 2,
+            });
         }
         else // find shortest path
         {
-            HashSet<uint> path = GetTaxiPath(GetSession().GameState.CurrentTaxiNode, taxi.Node, GetSession().GameState.UsableTaxiNodes);
+            HashSet<uint> path = GetTaxiPath(fromNode, taxi.Node, GetSession().GameState.UsableTaxiNodes);
             if (path.Count <= 1) // no nodes found
+            {
+                Log.Event("taxi.activate_requested", new
+                {
+                    flight_master = taxi.FlightMaster.ToString(),
+                    from_node = fromNode,
+                    to_node = taxi.Node,
+                    routing = "no_path",
+                    hop_count = path.Count,
+                });
                 return;
+            }
 
             WorldPacket packet = new WorldPacket(Opcode.CMSG_ACTIVATE_TAXI_EXPRESS);
             packet.WriteGuid(taxi.FlightMaster.To64());
@@ -54,8 +76,44 @@ public partial class WorldSocket
             foreach (uint itr in path)
                 packet.WriteUInt32(itr);
             SendPacketToServer(packet);
+            Log.Event("taxi.activate_requested", new
+            {
+                flight_master = taxi.FlightMaster.ToString(),
+                from_node = fromNode,
+                to_node = taxi.Node,
+                routing = "express",
+                hop_count = path.Count,
+            });
         }
         GetSession().GameState.IsWaitingForTaxiStart = true;
+    }
+
+    // JimsProxy (taxi-flight-robustness): vanilla 1.12 has no early-landing concept —
+    // the server is committed to the full SplineTimeFull and ignores any opcode trying
+    // to cut a flight short. The modern 1.14 client still surfaces the "Stop at next
+    // flight path" button regardless and sends this CMSG when clicked. Bundle
+    // 20260504-032731 (attempt_id dc1050b5) showed: server kept flying the original
+    // 56s spline to completion regardless of the early-landing CMSG.
+    //
+    // Therefore: don't forward (server can't honor it, no legacy mapping anyway), and
+    // don't cancel the dismount Task — cancelling left the player stuck in flight pose
+    // at the natural end of the spline because no one fired the control/gravity/unfly/
+    // unroot packets. The fix: log it for visibility, and let the dismount Task fire on
+    // its original schedule. Player lands cleanly at the original end destination; the
+    // button is purely cosmetic on vanilla.
+    //
+    // True early-landing emulation is a separate (substantial) follow-up — would need
+    // to compute the next taxi waypoint from the spline, force-teleport client+server
+    // there, and reconcile zone/instance/cost state. Tracked separately if needed.
+    [PacketHandler(Opcode.CMSG_TAXI_REQUEST_EARLY_LANDING)]
+    void HandleTaxiRequestEarlyLanding(EmptyClientPacket packet)
+    {
+        Log.Event("taxi.early_landing_requested_ignored", new
+        {
+            attempt_id = GetSession().GameState.TaxiAttemptId,
+            had_pending_dismount = GetSession().GameState.TaxiDismountCts != null,
+            reason = "vanilla_server_no_early_landing_support",
+        });
     }
     bool TaxiPathExist(uint from, uint to)
     {
