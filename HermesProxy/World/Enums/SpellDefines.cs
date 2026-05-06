@@ -584,7 +584,7 @@ public enum SpellCastResultVanilla : uint
     OnlyUnderwater = 88,
     OutOfRange = 89,
     Pacified = 90,
-    Possessed = 81,
+    Possessed = 91,
     Reagents = 92,
     RequiresArea = 93,
     RequiresSpellFocus = 94,
