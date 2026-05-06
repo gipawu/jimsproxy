@@ -55,8 +55,21 @@ public sealed class GameSessionData
     public bool ChannelDisplayList;
     public bool ShowPlayedTime;
     public bool IsInFarSight;
+    // JimsProxy (taxi-flight-robustness): IsInTaxiFlight is read on the dismount Task's
+    // ThreadPool thread and written on the packet-handler thread. Always access via
+    // Volatile.Read/Write so weak-memory-model reorderings can't deliver stale state to
+    // the dismount logic (e.g. seeing true after handler set it false).
     public bool IsInTaxiFlight;
     public bool IsWaitingForTaxiStart;
+    // JimsProxy (taxi-flight-robustness): when set, signals a pending taxi-dismount Task
+    // scheduled to fire at TaxiDismountFiresAtTickMs. The CTS is cancelled+disposed on
+    // (a) clean session disconnect, (b) early landing CMSG, (c) a fresh taxi spline
+    // arriving before the prior dismount fired (multi-segment chained flights). Without
+    // cancellation the Task captured a now-dead session and either NRE'd inside
+    // SendPacketToClient or fired control-grant packets at a session that had moved on.
+    public CancellationTokenSource? TaxiDismountCts;
+    public long TaxiDismountFiresAtTickMs;
+    public string? TaxiAttemptId;
     public bool IsWaitingForNewWorld;
     public bool IsWaitingForWorldPortAck;
     public bool IsFirstEnterWorld;
@@ -133,6 +146,23 @@ public sealed class GameSessionData
     public uint CurrentGuildNumAccounts;
     public WowGuid128 CurrentInteractedWithNPC;
     public WowGuid128 CurrentInteractedWithGO;
+    // JimsProxy: Auctionator-style Full Scan synthesis state. CMSG_AUCTION_REPLICATE_ITEMS
+    // has no legacy 1.12 equivalent; the proxy walks pages internally via
+    // CMSG_AUCTION_LIST_ITEMS at the canonical 6s cooldown and assembles rows
+    // into one SMSG_AUCTION_REPLICATE_RESPONSE. Default Browse-UI Search uses
+    // CMSG_AUCTION_LIST_ITEMS (different opcode), so every REPLICATE_ITEMS is
+    // by definition a full-AH scan request — no side-channel needed to
+    // differentiate. Lock guards every read/write: accumulator is appended
+    // from the WorldClient SMSG thread and read from the WorldSocket CMSG thread.
+    public bool AuctionReplicateInProgress;
+    public int AuctionReplicatePage;
+    public WowGuid128 AuctionReplicateAuctioneer = WowGuid128.Empty;
+    public uint AuctionReplicateChangeNumberGlobal;
+    public uint AuctionReplicateChangeNumberCursor;
+    public uint AuctionReplicateChangeNumberTombstone;
+    public List<World.Server.Packets.AuctionItem> AuctionReplicateAccumulator = new();
+    public readonly Lock AuctionReplicateLock = new();
+    public DateTime AuctionReplicateStartTime;
     public uint LastWhoRequestId;
     public WowGuid128 CurrentPetGuid;
     public WowGuid64 CurrentAttackTarget;        // active CMSG_ATTACK_SWING victim, cleared on ATTACK_STOP/CANCEL_COMBAT
@@ -1179,7 +1209,9 @@ public sealed class GameSessionData
     {
         lock (_gcdLock)
         {
-            return _gcdTimerHasFired && _lastFiredSpellId == spellId;
+            return _gcdTimerHasFired &&
+                   _lastFiredSpellId == spellId &&
+                   _gcdExpireTimestampMs > Environment.TickCount64;
         }
     }
 
@@ -1234,6 +1266,32 @@ public sealed class GameSessionData
             OnGcdHeldCastFire = null;
             return dropped;
         }
+    }
+
+    /// <summary>
+    /// JimsProxy (taxi-flight-robustness): cancel any pending taxi-dismount Task and clear
+    /// the in-flight bookkeeping. Idempotent — safe to call when no flight is active.
+    /// Called on (a) clean session disconnect, (b) early-landing CMSG, (c) a fresh taxi
+    /// spline arriving for the same player (multi-segment chained flights re-issue rather
+    /// than queuing). Without cancellation the captured Task fires SendPacketToClient
+    /// against a session that may have already been torn down or replaced.
+    /// </summary>
+    public void CancelTaxiDismount(string reason)
+    {
+        var cts = Interlocked.Exchange(ref TaxiDismountCts, null);
+        var attemptId = TaxiAttemptId;
+        if (cts != null)
+        {
+            try { cts.Cancel(); } catch { /* CTS may already be disposed */ }
+            cts.Dispose();
+            Framework.Logging.Log.Event("taxi.flight.dismount_cancelled", new
+            {
+                attempt_id = attemptId,
+                reason = reason,
+            });
+        }
+        TaxiDismountFiresAtTickMs = 0;
+        TaxiAttemptId = null;
     }
 
     /// <summary>
@@ -2183,6 +2241,12 @@ public class GlobalSessionData
         // JimsProxy (issue #43): cancel any held GCD cast and dispose its timer so it can't
         // fire after InstanceSocket has been torn down.
         GameState?.CancelGcdHold();
+
+        // JimsProxy (taxi-flight-robustness): same reasoning for the taxi-dismount Task —
+        // a pending flight Task captures session/InstanceSocket references and would NRE
+        // (or worse, send packets to a recreated session post-reconnect) if it fired after
+        // teardown.
+        GameState?.CancelTaxiDismount("session_disconnect");
 
         //MIRASU - capture quest item running totals before GameState is recreated so an unexpected
         //MIRASU   network disconnect followed by reconnect-to-same-character preserves the toast
