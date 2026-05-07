@@ -1,7 +1,6 @@
-#May-6-2026
-Please update proxy to latest 5.1.0-hotfix.1 or beta 5.1.1-beta.5 for the realm swap hotfix. 
-Alternatively, without updating, you can delete the last_character.txt file from the Hermes/AccountData/[your account name]/ folder which client and proxy are closed.
-
+#May 6, 2026
+Please update to the latest hotfix to correct the realm swap bug. Versions 5.1.0-hotfix.1 or 5.1.1-beta.5 will have it.
+Alternatively, without updating, you can delete the stale last_character.txt file in the Hermes/AccountData/[your account name]/ folder from the install directory (link in top right of launcher).
 
 
 # JimsProxy
