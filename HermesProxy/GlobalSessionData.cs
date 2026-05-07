@@ -227,9 +227,17 @@ public sealed class GameSessionData
         }
     }
 
-    public void ClearHeldCastTimeCast()
+    // JimsProxy (silent-hold GCD sweep 2026-05-07): returns the dropped cast so callers
+    // can ack-fail it to the modern client. Without the ack the button stays lit forever
+    // when a cast bar is interrupted (ESC, kick, target death, OOM mid-cast).
+    public ClientCastRequest? ClearHeldCastTimeCast()
     {
-        lock (_gcdLock) { _heldCastTimeCast = null; }
+        lock (_gcdLock)
+        {
+            var dropped = _heldCastTimeCast;
+            _heldCastTimeCast = null;
+            return dropped;
+        }
     }
 
     public bool HasNonStartedPendingCastForSpell(uint spellId)

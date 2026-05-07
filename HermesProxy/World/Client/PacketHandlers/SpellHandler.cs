@@ -245,7 +245,9 @@ public partial class WorldClient
             SendPacketToClient(failed);
 
             var gameState = GetSession().GameState;
-            gameState.ClearHeldCastTimeCast();
+            var heldCastTimeDrop = gameState.ClearHeldCastTimeCast();
+            if (heldCastTimeDrop != null)
+                GetSession().InstanceSocket.SendCastRequestFailed(heldCastTimeDrop, false);
             if (!gameState.IsGcdHoldActive() && !gameState.HasForwardedPendingCast())
             {
                 var heldCast = gameState.TakeHeldCastIfReady();
@@ -628,7 +630,9 @@ public partial class WorldClient
             // so HasStartedNormalCast doesn't permanently block subsequent casts.
             pendingNormal.WatchdogDeadlineMs = Environment.TickCount64 + WatchdogWindowMs;
 
-            GetSession().GameState.ClearHeldCastTimeCast();
+            var heldCastTimeDrop = GetSession().GameState.ClearHeldCastTimeCast();
+            if (heldCastTimeDrop != null)
+                GetSession().InstanceSocket.SendCastRequestFailed(heldCastTimeDrop, false);
 
             // JimsProxy (PR #161 follow-up — movement preemption): if the user
             // started moving while this cast-time spell was in progress, the
