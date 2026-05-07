@@ -297,12 +297,24 @@ public partial class WorldSocket : SocketBase, BnetServices.INetwork
             case Opcode.CMSG_PING:
                 Ping ping = new(packet);
                 ping.Read();
-                if (_connectType == ConnectionType.Realm && GetSession().WorldClient != null && GetSession().WorldClient!.IsConnected() && GetSession().WorldClient!.IsAuthenticated())
-                {
-                    GetSession().WorldClient!.SendPing(ping.Serial, ping.Latency);
-                }
-                else
-                    HandlePing(ping);
+                // JimsProxy m_OverSpeedPings antiflood fix:
+                // Previously when _connectType==Realm we ALSO forwarded the modern client's
+                // ping to the legacy server (in addition to responding locally). Combined
+                // with WorldClient's own _keepAliveTimer (KeepAliveIntervalMs=30s) this
+                // delivered TWO CMSG_PING per ~30s cycle to the legacy server, both anchored
+                // to ~connect time so they arrived within milliseconds of each other. Vanilla
+                // mangos-derived servers (Twinstar, Kronos) track over-speed pings via a
+                // counter (vmangos m_OverSpeedPings — confirmed by Kronos dev) and kick when
+                // it exceeds threshold; the kick presents as "Socket Closed By GameWorldServer
+                // (header)" some minutes into a session and is one of the three delayed-kick
+                // sources Kronos dev called out (the other two: malformed packet, Warden 90s).
+                // Modern client pings two TCP sockets (Realm + Instance) ~every 30s; both
+                // arrive here within 1ms of each other (visible as paired path:inline events
+                // in JSONL bundles). The proxy's own keepalive timer suffices to keep the
+                // legacy connection alive — never forward client pings to legacy. We sacrifice
+                // forwarding the client's measured-latency value to legacy (purely cosmetic
+                // for the friends-list latency icon) and gain a kick-free session.
+                HandlePing(ping);
                 break;
             case Opcode.CMSG_AUTH_SESSION:
                 AuthSession authSession = new(packet);
