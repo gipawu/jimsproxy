@@ -17,6 +17,15 @@ local function CreateHeader(parent, text, yOffset)
     return fs
 end
 
+local function CreateDescription(parent, text, yOffset)
+    local fs = parent:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    fs:SetPoint("TOPLEFT", parent, "TOPLEFT", 18, yOffset)
+    fs:SetPoint("RIGHT", parent, "RIGHT", -16, 0)
+    fs:SetJustifyH("LEFT")
+    fs:SetText(text)
+    return fs
+end
+
 ---------------------------------------------------------------------------
 -- Panel
 ---------------------------------------------------------------------------
@@ -32,39 +41,43 @@ subtitle:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -4)
 subtitle:SetText("Build " .. namespace.BUILD)
 
 ---------------------------------------------------------------------------
--- Module toggles
+-- Client Fixes (always on by default — these fix real bugs)
 ---------------------------------------------------------------------------
 local y = -60
-CreateHeader(panel, "Module Toggles", y)
-y = y - 26
+CreateHeader(panel, "Client Fixes", y)
+y = y - 18
+CreateDescription(panel, "These fix bugs in the 1.14 client when connected to a vanilla server. All enabled by default.", y)
+y = y - 22
 
 local cbPetFix = CreateCheckbox(panel, y,
-    "PetFix — Pet UI crash fix  |cFFFF6600(reload required)|r",
-    "Wraps PetPaperDollFrame_SetStats and PetStable_Update in pcall\nto prevent nil-class crashes on hunter pets.\n\nChanges take effect after /reload.")
+    "Pet UI crash fix  |cFFFF6600(reload required)|r",
+    "Prevents Lua errors when opening the pet stats or stable UI.\nHunter pets from vanilla servers don't have a player class,\nwhich crashes the 1.14 client's FrameXML code.\n\nChanges take effect after /reload.")
 y = y - 28
 
 local cbTaxiFix = CreateCheckbox(panel, y,
-    "TaxiFix — Hide early-landing button",
-    "Hides the in-flight Leave Vehicle button.\nVanilla servers don't support early landing.")
+    "Hide early-landing button",
+    "Hides the \"Stop at next flight path\" button during flights.\nVanilla servers don't support early landing — clicking it\ndoes nothing. This removes the misleading button.")
 y = y - 40
 
 ---------------------------------------------------------------------------
--- Castbar frame toggles
+-- Cast Bars
 ---------------------------------------------------------------------------
-CreateHeader(panel, "Castbar Frames", y)
-y = y - 26
+CreateHeader(panel, "Cast Bars", y)
+y = y - 18
+CreateDescription(panel, "Show cast bars for other players and NPCs. The vanilla server sends cast data through the proxy, but the 1.14 client doesn't display it natively — these fill that gap.", y)
+y = y - 30
 
 local castbarUnits = {
-    { key = "target",    label = "Target castbar" },
-    { key = "nameplate", label = "Nameplate castbars" },
-    { key = "player",    label = "Player castbar  |cFF888888(skins Blizzard bar)|r" },
-    { key = "focus",     label = "Focus castbar" },
-    { key = "party",     label = "Party castbars" },
+    { key = "target",    label = "Target",     tooltip = "Shows what your current target is casting.\nEssential for interrupting enemy spells." },
+    { key = "nameplate", label = "Nameplates",  tooltip = "Shows cast bars on nameplates above characters' heads.\nUseful in dungeons and PvP to see multiple casts at once." },
+    { key = "focus",     label = "Focus",       tooltip = "Shows what your focus target is casting.\nUseful for watching a specific mob while targeting another." },
+    { key = "player",    label = "Player  |cFF888888(reskins Blizzard bar)|r", tooltip = "Replaces the default Blizzard cast bar with the JimsPlus style.\nPurely cosmetic — disable if you prefer the default look\nor use another cast bar addon." },
+    { key = "party",     label = "Party members", tooltip = "Shows cast bars on party member frames.\nUseful for seeing when your healer is casting." },
 }
 
 local castbarCBs = {}
 for _, info in ipairs(castbarUnits) do
-    castbarCBs[info.key] = CreateCheckbox(panel, y, info.label)
+    castbarCBs[info.key] = CreateCheckbox(panel, y, info.label, info.tooltip)
     y = y - 28
 end
 
@@ -93,7 +106,7 @@ cbPetFix:SetScript("OnClick", function(self)
     if namespace.db then
         namespace.db.petFix = enabled
     end
-    print("|cFF00FF00[JimsPlus]|r PetFix " .. (enabled and "enabled" or "disabled") .. ". Type /reload to apply.")
+    print("|cFF00FF00[JimsPlus]|r Pet UI fix " .. (enabled and "enabled" or "disabled") .. ". Type /reload to apply.")
 end)
 
 cbTaxiFix:SetScript("OnClick", function(self)
@@ -101,7 +114,7 @@ cbTaxiFix:SetScript("OnClick", function(self)
     if namespace.db then
         namespace.db.taxiFix = enabled
     end
-    print("|cFF00FF00[JimsPlus]|r TaxiFix " .. (enabled and "enabled" or "disabled") .. ". Type /reload to apply.")
+    print("|cFF00FF00[JimsPlus]|r Early-landing button " .. (enabled and "hidden" or "shown") .. ". Type /reload to apply.")
 end)
 
 for _, info in ipairs(castbarUnits) do
