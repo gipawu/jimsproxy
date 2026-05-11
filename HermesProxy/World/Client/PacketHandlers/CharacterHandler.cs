@@ -282,15 +282,19 @@ public partial class WorldClient
         // Proactively push corrected ItemEffect hotfixes for items whose modern
         // DB2 LegacySlotIndex doesn't match where the vanilla 1.12 server actually
         // places the use-spell (warlock healthstones currently — 5509-5513, 9421).
-        // The reactive slot-mismatch path in GenerateItemEffectUpdateIfNeeded only
-        // fires when the modern client queries an item via CMSG_ITEM_QUERY_SINGLE,
-        // which it skips when the ItemTemplate is already cached locally. Anyone
-        // who got their first healthstone before this fix shipped has a stale
-        // cached entry that the reactive path never gets a chance to correct.
-        // Push the hotfix unconditionally at login so the override lands even
-        // when the client never queries.
         foreach (var hotfix in GameData.PushKnownItemEffectFixes())
             SendPacketToClient(hotfix);
+
+        // Clear any stale "is auto-repeating" flag the modern 1.14 client may have
+        // entered the world with.
+        var cancelStaleRepeat = new CancelAutoRepeat();
+        cancelStaleRepeat.Guid = GetSession().GameState.CurrentPlayerGuid;
+        SendPacketToClient(cancelStaleRepeat);
+        Framework.Logging.Log.Event("ranged.auto_repeat.cleared_at_login", new
+        {
+            player_guid_low = GetSession().GameState.CurrentPlayerGuid.GetCounter(),
+            map_id = verify.MapID,
+        });
 
         LoadCUFProfiles cuf = new();
         cuf.Data = GetSession().AccountDataMgr.LoadCUFProfiles();
