@@ -1,6 +1,6 @@
 # JimsProxy
 
-A maintained fork of [HermesProxy](https://github.com/WowLegacyCore/HermesProxy) — a protocol translation proxy that lets WoW Classic 1.14.2 clients connect to vanilla 1.12.1 private servers. Primary target: [Kronos](https://www.kronos-wow.com/).
+A maintained fork of [HermesProxy](https://github.com/WowLegacyCore/HermesProxy) — a protocol translation proxy that lets WoW Classic 1.14.2 clients connect to vanilla 1.12.1 server. Primary target: [Kronos](https://www.kronos-wow.com/).
 
 The upstream HermesProxy project was [archived in November 2024](https://github.com/WowLegacyCore/HermesProxy). JimsProxy is rebased onto [Xian55's fork](https://github.com/Xian55/HermesProxy) (April 2026) for 18 months of community fixes, then adds Kronos-specific translation fixes and diagnostic tooling on top.
 
