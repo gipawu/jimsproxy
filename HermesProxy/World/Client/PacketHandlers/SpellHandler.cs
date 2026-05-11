@@ -1735,7 +1735,9 @@ public partial class WorldClient
             dbgSpellId = spellId;
             uint effectCount = packet.ReadUInt32();
 
-            Log.Print(LogType.Server, $"SpellExecuteLog: caster={casterGuid} spell={spellId} effects={effectCount}");
+            bool verbose = Log.VerboseLogEnabled;
+            if (verbose)
+                Log.Print(LogType.Server, $"SpellExecuteLog: caster={casterGuid} spell={spellId} effects={effectCount}");
 
             for (uint i = 0; i < effectCount; i++)
             {
@@ -1745,7 +1747,8 @@ public partial class WorldClient
                 dbgEffectType = effectType;
                 dbgTargetCount = targetCount;
 
-                Log.Print(LogType.Server, $"  Effect[{i}]: type={effectType} targets={targetCount}");
+                if (verbose)
+                    Log.Print(LogType.Server, $"  Effect[{i}]: type={effectType} targets={targetCount}");
 
                 for (uint t = 0; t < targetCount; t++)
                 {
@@ -1757,73 +1760,59 @@ public partial class WorldClient
                             uint pdAmount = packet.ReadUInt32();
                             uint pdPowerType = packet.ReadUInt32();
                             float pdMultiplier = packet.ReadFloat();
-                            Log.Print(LogType.Server, $"PowerDrain: target={pdGuid} amount={pdAmount} power={pdPowerType}");
+                            if (verbose) Log.Print(LogType.Server, $"PowerDrain: target={pdGuid} amount={pdAmount} power={pdPowerType}");
                             break;
                         case 10: // HEAL
                             var hGuid = packet.ReadPackedGuid().To128(GetSession().GameState);
                             uint hAmount = packet.ReadUInt32();
                             uint hCrit = packet.ReadUInt32();
-                            Log.Print(LogType.Server, $"Heal: target={hGuid} amount={hAmount} crit={hCrit}");
+                            if (verbose) Log.Print(LogType.Server, $"Heal: target={hGuid} amount={hAmount} crit={hCrit}");
                             break;
                         case 30: // ENERGIZE
                             var eGuid = packet.ReadPackedGuid().To128(GetSession().GameState);
                             uint eAmount = packet.ReadUInt32();
                             uint ePowerType = packet.ReadUInt32();
-                            Log.Print(LogType.Server, $"Energize: target={eGuid} amount={eAmount} power={ePowerType}");
+                            if (verbose) Log.Print(LogType.Server, $"Energize: target={eGuid} amount={eAmount} power={ePowerType}");
                             break;
                         case 32: // EXTRA_ATTACKS (vanilla value 32)
                             var eaGuid = packet.ReadPackedGuid().To128(GetSession().GameState);
                             uint eaCount = packet.ReadUInt32();
-                            Log.Print(LogType.Server, $"ExtraAttacks: target={eaGuid} count={eaCount}");
+                            if (verbose) Log.Print(LogType.Server, $"ExtraAttacks: target={eaGuid} count={eaCount}");
                             break;
                         case 24: // CREATE_ITEM
                             uint ciItemId = packet.ReadUInt32();
-                            Log.Print(LogType.Server, $"CreateItem: item={ciItemId}");
+                            if (verbose) Log.Print(LogType.Server, $"CreateItem: item={ciItemId}");
                             break;
                         case 41: // INTERRUPT_CAST
                             var icGuid = packet.ReadPackedGuid().To128(GetSession().GameState);
                             uint icSpellId = packet.ReadUInt32();
-                            Log.Print(LogType.Server, $"InterruptCast: target={icGuid} spell={icSpellId}");
+                            if (verbose) Log.Print(LogType.Server, $"InterruptCast: target={icGuid} spell={icSpellId}");
                             break;
                         case 3: // DUMMY — server-side script triggers the real mechanic.
                                 // Paladin Holy Shock (20930), various Judgements, etc.
                                 // No per-target payload follows.
-                            Log.Print(LogType.Server, $"Dummy(type={effectType}): no target payload");
-                            break;
                         case 50: // TRANS_DOOR — Lightwell, Mage Portal, etc. No per-target payload.
-                            Log.Print(LogType.Server, $"TransDoor(type={effectType}): no target payload");
-                            break;
                         case 69: // DISTRACT — positional spell, no per-target payload.
-                            Log.Print(LogType.Server, $"Distract(type={effectType}): no target payload");
-                            break;
-                        case 77: // SCRIPT_EFFECT — Judgement (20271) and many other script-driven
-                                 // spells. Like DUMMY, the real mechanic is server-side; no
-                                 // per-target payload on the wire.
-                            Log.Print(LogType.Server, $"ScriptEffect(type={effectType}): no target payload");
-                            break;
-                        case 56:  // SUMMON_PET — pet summon, server-side, no per-target payload
-                                  // (observed for spell 883 = Call Pet).
-                        case 63:  // TAMECREATURE (Kronos numbering) — observed for spell 1515 =
-                                  // Tame Beast. The tamed creature is summoned via the normal
-                                  // pet path; this log entry has no per-target payload.
-                        case 102: // observed for spell 2641 = Dismiss Pet — server-side, no payload.
-                        case 104: // observed for spell 14311 / various Hunter abilities — Kronos
-                                  // emits these without a per-target GUID payload.
-                            Log.Print(LogType.Server, $"NoPayload(type={effectType}): no target payload");
+                        case 77: // SCRIPT_EFFECT — Judgement (20271) and many other script-driven spells.
+                        case 56:  // SUMMON_PET
+                        case 63:  // TAMECREATURE
+                        case 102: // Dismiss Pet
+                        case 104: // Hunter abilities — no per-target payload.
+                            if (verbose) Log.Print(LogType.Server, $"NoPayload(type={effectType}): no target payload");
                             break;
                         case 101: // FEED_PET
                             uint fpItemId = packet.ReadUInt32();
-                            Log.Print(LogType.Server, $"FeedPet: item={fpItemId}");
+                            if (verbose) Log.Print(LogType.Server, $"FeedPet: item={fpItemId}");
                             break;
                         case 113: // DURABILITY_DAMAGE
                             var ddGuid = packet.ReadPackedGuid().To128(GetSession().GameState);
                             uint ddItemId = packet.ReadUInt32();
                             uint ddAmount = packet.ReadUInt32();
-                            Log.Print(LogType.Server, $"DurabilityDmg: target={ddGuid} item={ddItemId} amount={ddAmount}");
+                            if (verbose) Log.Print(LogType.Server, $"DurabilityDmg: target={ddGuid} item={ddItemId} amount={ddAmount}");
                             break;
                         default: // INSTAKILL, RESURRECT, DISPEL, SUMMON, etc — just a GUID
                             var defaultGuid = packet.ReadPackedGuid().To128(GetSession().GameState);
-                            Log.Print(LogType.Server, $"Default(type={effectType}): target={defaultGuid}");
+                            if (verbose) Log.Print(LogType.Server, $"Default(type={effectType}): target={defaultGuid}");
                             break;
                     }
                 }
