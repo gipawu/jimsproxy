@@ -279,6 +279,27 @@ public partial class WorldClient
         setup.ServerExpansionLevel = (byte)(LegacyVersion.ExpansionVersion - 1);
         SendPacketToClient(setup);
 
+        // Clear any stale "is auto-repeating" flag the modern 1.14 client may have
+        // entered the world with. Confirmed via bundle jimsproxy-20260511-111421:
+        // on a fresh hunter login, the first Auto Shot button press sends both
+        // CMSG_CAST_SPELL (75) AND CMSG_CANCEL_AUTO_REPEAT_SPELL in the same 1ms
+        // packet burst — because the client thinks auto-repeat is currently active
+        // (stale flag) and the action button's toggle-off path fires alongside the
+        // cast. Server processes the cast first, then the cancel, emits
+        // SMSG_SPELL_START + SMSG_SPELL_FAILURE, and the user has to press a second
+        // time. Same symptom on wand "Shoot" (5019) first press for casters.
+        // Vanilla 1.12 servers don't preserve auto-repeat state across login, so
+        // we have no legitimate auto-repeat to break — this is purely a state
+        // reset on the modern client.
+        var cancelStaleRepeat = new CancelAutoRepeat();
+        cancelStaleRepeat.Guid = GetSession().GameState.CurrentPlayerGuid;
+        SendPacketToClient(cancelStaleRepeat);
+        Framework.Logging.Log.Event("ranged.auto_repeat.cleared_at_login", new
+        {
+            player_guid_low = GetSession().GameState.CurrentPlayerGuid.GetCounter(),
+            map_id = verify.MapID,
+        });
+
         LoadCUFProfiles cuf = new();
         cuf.Data = GetSession().AccountDataMgr.LoadCUFProfiles();
         SendPacketToClient(cuf);
