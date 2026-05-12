@@ -19,6 +19,14 @@ using System;
 
 namespace HermesProxy;
 
+public sealed record PendingPetScale(
+    WowGuid128 Guid,
+    uint Entry,
+    uint DisplayId,
+    float RawScale,
+    float Cms,
+    bool IsWarlockPet);
+
 public class PlayerCache
 {
     public string? Name;
@@ -149,6 +157,12 @@ public sealed class GameSessionData
     // so we always send a valid family, cleared only on explicit pet dismiss.
     public ConcurrentDictionary<WowGuid128, ushort> CachedPetCreatureFamily = new();
     public Dictionary<uint, WowGuid128> CachedPetNumbers = new();
+    // JimsProxy (pet-scale-resolve-race): Pet GUIDs whose first SCALE_X arrived
+    // before SMSG_QUERY_CREATURE_RESPONSE landed → CreatureTemplate.Family was
+    // unknown → fell back to legacy K_hunter / K_warlock. Drained by QueryHandler
+    // when the matching template arrives — entries with matching petEntry get a
+    // synthesized SCALE_X re-emit with the family-correct K.
+    public Dictionary<WowGuid128, PendingPetScale> PetScaleResolvePending = new();
     public string LeftChannelName = "";
     public bool IsPassingOnLoot;
     public int GroupUpdateCounter;

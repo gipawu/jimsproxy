@@ -3992,16 +3992,15 @@ public partial class WorldClient
                 //   - Family not in CreatureFamily table (rare, custom server) → K_hunter
                 //   - Warlock pet (DisplayId in hardcoded set) → CreatureFamily lookup
                 //     also covers Imp/Felhunter/Voidwalker/Succubus, so prefer it
-                int petLevel = 0;
-                int UNIT_FIELD_LEVEL_idx = LegacyVersion.GetUpdateField(UnitField.UNIT_FIELD_LEVEL);
-                if (UNIT_FIELD_LEVEL_idx >= 0
-                    && UNIT_FIELD_LEVEL_idx < updateMaskArray.Length
-                    && updateMaskArray[UNIT_FIELD_LEVEL_idx])
-                    petLevel = updates[UNIT_FIELD_LEVEL_idx].Int32Value;
-                else
-                    petLevel = Session.GameState.GetLegacyFieldValueInt32(guid, UnitField.UNIT_FIELD_LEVEL);
-
-                int petEntry = (int)guid.GetEntry();
+                // For Pet-high-GUIDs (warlock minions, hunter pets, charmed mobs),
+                // `guid.GetEntry()` returns the per-instance pet number, NOT the
+                // creature_template ID. The creature_template ID lives in
+                // OBJECT_FIELD_ENTRY which the SCALE_X branch already copied into
+                // updateData.ObjectData.EntryID, OR (for delta updates that
+                // don't carry ENTRY) the GameState legacy field cache.
+                int petEntry = updateData.ObjectData.EntryID != null
+                    ? (int)updateData.ObjectData.EntryID
+                    : Session.GameState.GetLegacyFieldValueInt32(guid, ObjectField.OBJECT_FIELD_ENTRY);
                 int familyId = 0;
                 float? familyTableK = null;
                 string? familyName = null;
@@ -4013,7 +4012,7 @@ public partial class WorldClient
                         familyId = template.Family;
                         if (familyId > 0 && GameData.CreatureFamilies.TryGetValue(familyId, out var fam))
                         {
-                            familyTableK = GameData.GetPetFamilyScaleForLevel(familyId, petLevel);
+                            familyTableK = GameData.GetPetFamilyScale(familyId);
                             familyName = "family-" + familyId;
                         }
                     }
@@ -4021,6 +4020,18 @@ public partial class WorldClient
 
                 float k = familyTableK
                     ?? (isWarlockPet ? K_warlock : K_hunter);
+
+                // First-sight race: if CreatureTemplate isn't cached yet (creature
+                // query hasn't round-tripped), record the pet's data so the next
+                // SMSG_QUERY_CREATURE_RESPONSE can re-emit SCALE_X with the
+                // family-correct K. Otherwise the pet renders at K_hunter=1.5
+                // fallback for one update cycle and the user sees a "big pet"
+                // until they resummon.
+                if (familyTableK == null && petEntry > 0)
+                {
+                    Session.GameState.PetScaleResolvePending[guid] = new PendingPetScale(
+                        guid, (uint)petEntry, (uint)displayId, rawScale, cms, isWarlockPet);
+                }
 
                 // Skip normalization if CMS data is missing/invalid — fall back to a flat
                 // K multiply so the pet still gets a size bump rather than passing through
@@ -4039,7 +4050,6 @@ public partial class WorldClient
                     k = k,
                     family = familyName ?? (isWarlockPet ? "warlock" : "hunter"),
                     family_id = familyId,
-                    pet_level = petLevel,
                     pet_entry = petEntry,
                     k_source = familyTableK.HasValue ? "family-table" : (isWarlockPet ? "k-warlock-fallback" : "k-hunter-fallback"),
                     raw_scale = rawScale,

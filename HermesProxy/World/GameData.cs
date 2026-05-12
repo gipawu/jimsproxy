@@ -1335,17 +1335,19 @@ public static partial class GameData
         CreatureFamilies = dict.ToFrozenDictionary();
     }
 
-    // Linear interpolation of MinScale → MaxScale across MinScaleLevel → MaxScaleLevel.
-    // Returns 1.0 if family is unknown or level falls outside the range bounds.
-    public static float GetPetFamilyScaleForLevel(int familyId, int level)
+    // Returns the family's MaxScale value as a flat K. The vanilla server already
+    // lerps the level-based growth via UNIT_FIELD_SCALE_X on the wire (verified
+    // 2026-05-11: Bruce L16 raw_scale=0.7 = exactly the CreatureFamily 0.6→1.0
+    // lerp for boar at L16). Applying the lerp again in the proxy would
+    // double-multiply and render every pet noticeably small. MaxScale acts as
+    // the per-family M_native / ModelScale correction the modern client is
+    // missing — the same K=1.0 / K=0.7 / K=0.5 values empirical tuning landed on.
+    // Returns 1.0 for unknown families (legacy fallback behavior).
+    public static float GetPetFamilyScale(int familyId)
     {
         if (!CreatureFamilies.TryGetValue(familyId, out var f))
             return 1.0f;
-        if (f.MaxScaleLevel <= f.MinScaleLevel)
-            return f.MinScale;
-        int clamped = Math.Clamp(level, f.MinScaleLevel, f.MaxScaleLevel);
-        float t = (float)(clamped - f.MinScaleLevel) / (f.MaxScaleLevel - f.MinScaleLevel);
-        return f.MinScale + (f.MaxScale - f.MinScale) * t;
+        return f.MaxScale;
     }
 
     public static void LoadTransports()

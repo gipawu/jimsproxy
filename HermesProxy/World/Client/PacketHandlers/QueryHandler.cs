@@ -353,6 +353,57 @@ public partial class WorldClient
 
         GameData.StoreCreatureTemplate(response.CreatureID, creature);
         SendPacketToClient(response);
+
+        // JimsProxy (pet-scale-resolve-race): drain any pet GUIDs that arrived
+        // with SCALE_X before this template's family was known. Recompute K
+        // from the now-resolved family and emit a SCALE_X-only values update so
+        // the first-sight "big pet" snaps to correct size without a resummon.
+        ResolvePendingPetScalesForEntry(response.CreatureID, creature.Family);
+    }
+
+    private void ResolvePendingPetScalesForEntry(uint entry, int familyId)
+    {
+        var pending = GetSession().GameState.PetScaleResolvePending;
+        if (pending.Count == 0) return;
+
+        // Collect matches first; we mutate the dict while iterating.
+        var matches = new System.Collections.Generic.List<PendingPetScale>();
+        foreach (var kv in pending)
+        {
+            if (kv.Value.Entry == entry)
+                matches.Add(kv.Value);
+        }
+        if (matches.Count == 0) return;
+
+        float k = (familyId > 0)
+            ? GameData.GetPetFamilyScale(familyId)
+            : (matches[0].IsWarlockPet ? 0.75f : 1.5f);
+
+        foreach (var p in matches)
+        {
+            float emit = (p.Cms > 0)
+                ? (p.RawScale / p.Cms) * k
+                : p.RawScale * k;
+
+            // Synthesize a values-update carrying just OBJECT_FIELD_SCALE_X.
+            UpdateObject updateObject = new UpdateObject(GetSession().GameState);
+            ObjectUpdate update = new ObjectUpdate(p.Guid, UpdateTypeModern.Values, GetSession());
+            update.ObjectData.Scale = emit;
+            updateObject.ObjectUpdates.Add(update);
+            SendPacketToClient(updateObject);
+
+            Framework.Logging.Log.Event("unit.pet_scale.resolved_after_template", new
+            {
+                guid = p.Guid.ToString(),
+                entry = p.Entry,
+                family_id = familyId,
+                k = k,
+                raw_scale = p.RawScale,
+                emitted_scale = emit,
+            });
+
+            pending.Remove(p.Guid);
+        }
     }
     [PacketHandler(Opcode.SMSG_QUERY_GAME_OBJECT_RESPONSE)]
     void HandleQueryGameObjectResposne(WorldPacket packet)
