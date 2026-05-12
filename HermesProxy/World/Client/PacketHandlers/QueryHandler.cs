@@ -194,14 +194,27 @@ public partial class WorldClient
 
             if (creatureOrGoId != 0 && creatureOrGoAmount != 0)
             {
+                // StorageIndex must equal the vanilla server's counter index, which is the
+                // ABSOLUTE slot 'i' in ReqCreatureOrGOId[0..3] — vmangos credits via
+                // SetQuestSlotCounter(slot, creatureOrGO_idx, count) where creatureOrGO_idx
+                // is this loop's 'i' (Player.cpp::SendQuestUpdateAddCreatureOrGo). The
+                // modern client reads ObjectiveProgress[StorageIndex] for progress, so if
+                // we compressed via objectiveCounter++ it would mis-align whenever
+                // ReqCreatureOrGOId has a zero gap (e.g. Twinstar quest #905 "The Angry
+                // Scytheclaws" — slot 0 is empty, Blue/Yellow/Red at slots 1/2/3 — the
+                // unticked counter[0] showed under whichever objective got compressed
+                // StorageIndex 0, leaving Blue Raptor Nest perpetually 0/1 in the modern
+                // client even though the quest was server-completable).
                 QuestObjective objective = new QuestObjective();
                 objective.QuestID = response.QuestID;
                 objective.Id = QuestObjective.QuestObjectiveCounter++;
-                objective.StorageIndex = objectiveCounter++;
+                objective.StorageIndex = (sbyte)i;
                 objective.Type = isGo ? QuestObjectiveType.GameObject : QuestObjectiveType.Monster;
                 objective.ObjectID = creatureOrGoId;
                 objective.Amount = creatureOrGoAmount;
                 quest.Objectives.Add(objective);
+                if (objectiveCounter < i + 1)
+                    objectiveCounter = (sbyte)(i + 1);
             }
 
             if (LegacyVersion.AddedInVersion(ClientVersionBuild.V3_0_2_9056))
@@ -244,8 +257,30 @@ public partial class WorldClient
         for (int i = 0; i < 4; i++)
         {
             string objectiveText = packet.ReadCString();
-            if (quest.Objectives.Count > i)
-                quest.Objectives[i].Description = objectiveText;
+            if (string.IsNullOrEmpty(objectiveText))
+                continue;
+            // ObjectiveText[i] is keyed by ABSOLUTE wire slot in vmangos
+            // (Quest.cpp::QuestQueryResponse::AppendBodyTo), matching ReqCreatureOrGOId[i].
+            // With the StorageIndex=i alignment above, the description for slot i belongs
+            // to whichever objective sits at StorageIndex == i (GO/Monster objectives
+            // only — item/rep objectives keep their compressed StorageIndex). Falling
+            // back to creation order only when no matching slot exists preserves
+            // pre-existing behavior for non-GO objectives.
+            QuestObjective? match = null;
+            for (int oi = 0; oi < quest.Objectives.Count; oi++)
+            {
+                var obj = quest.Objectives[oi];
+                if (obj.StorageIndex == i &&
+                    (obj.Type == QuestObjectiveType.GameObject || obj.Type == QuestObjectiveType.Monster))
+                {
+                    match = obj;
+                    break;
+                }
+            }
+            if (match == null && quest.Objectives.Count > i)
+                match = quest.Objectives[i];
+            if (match != null)
+                match.Description = objectiveText;
         }
 
         // Placeholders
@@ -266,6 +301,38 @@ public partial class WorldClient
         //MIRASU   can now resolve their QuestObjective. Replay them so the over-head toast doesn't
         //MIRASU   drop the first pickup of an unfamiliar quest item (off-by-1 bug).
         ReplayPendingQuestItemCredits();
+
+        // Re-emit the player's quest log entry for this quest so the modern client
+        // re-renders ObjectiveProgress with the now-resolvable item-objective overlay
+        // applied (see ReadQuestLogEntry's item-overlay block). Without this re-emit,
+        // a proxy-issued CMSG_QUERY_QUEST_INFO during login (UpdateHandler's quest
+        // log walk) populates the template *after* the initial OBJECT_UPDATE has
+        // already been serialized to the modern client at 0/N, leaving the visual
+        // permanently stale until some unrelated event triggers another quest log
+        // field update. Only re-emit when the quest actually has item objectives —
+        // pure-kill quests don't need this round-trip.
+        if (quest.Objectives.Exists(o => o.Type == QuestObjectiveType.Item))
+        {
+            var playerGuid = GetSession().GameState.CurrentPlayerGuid;
+            var playerFields = GetSession().GameState.GetCachedObjectFieldsLegacy(playerGuid);
+            if (playerFields != null)
+            {
+                int questLogSize = LegacyVersion.GetQuestLogSize();
+                for (int slot = 0; slot < questLogSize; slot++)
+                {
+                    var logEntry = ReadQuestLogEntry(slot, null, playerFields);
+                    if (logEntry == null || logEntry.QuestID != response.QuestID)
+                        continue;
+
+                    ObjectUpdate refresh = new ObjectUpdate(playerGuid, UpdateTypeModern.Values, GetSession());
+                    refresh.PlayerData.QuestLog[slot] = logEntry;
+                    UpdateObject refreshPacket = new UpdateObject(GetSession().GameState);
+                    refreshPacket.ObjectUpdates.Add(refresh);
+                    SendPacketToClient(refreshPacket);
+                    break;
+                }
+            }
+        }
     }
 
     [PacketHandler(Opcode.SMSG_QUERY_CREATURE_RESPONSE)]
