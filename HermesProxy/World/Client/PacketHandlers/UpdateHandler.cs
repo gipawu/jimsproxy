@@ -1279,8 +1279,11 @@ public partial class WorldClient
                         resolved = dictCount;
                         fromDict = true;
                     }
-                    else if (obj.ObjectID > 0)
+                    else if (obj.ObjectID > 0 && GetSession().GameState.IsFirstEnterWorld)
                     {
+                        // Inventory walk fallback only during login — after that,
+                        // SMSG_QUEST_UPDATE_ADD_ITEM credit packets keep the dict
+                        // in sync and the walk is unnecessary overhead.
                         resolved = GetSession().GameState.CountItemsByEntry((uint)obj.ObjectID);
                     }
 
