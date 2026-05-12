@@ -50,6 +50,20 @@ public static partial class GameData
     public static FrozenDictionary<uint, uint> Gems = FrozenDictionary<uint, uint>.Empty;
     public static FrozenDictionary<uint, CreatureDisplayInfo> CreatureDisplayInfos = FrozenDictionary<uint, CreatureDisplayInfo>.Empty;
     public static FrozenDictionary<uint, CreatureModelCollisionHeight> CreatureModelCollisionHeights = FrozenDictionary<uint, CreatureModelCollisionHeight>.Empty;
+    // Maps a talent-rank spell id to the array of LOWER-rank spell ids of the same talent
+    // (e.g. Permafrost rank 3 spell 12571 → [11175, 12569]). Used by SpellHandler to inject
+    // synthetic "learned" entries for predecessor ranks so the modern client's
+    // IsPlayerSpell(rankN) API returns true for every rank the player has actually spent
+    // points in. The vanilla server's LearnTalent removes the previous rank via
+    // SMSG_UNLEARNED_SPELL and learns the new rank — so without injection only the highest
+    // rank is in the modern client's known-spells set, breaking addons like
+    // LibClassicDurations that probe lower-rank IDs to detect talent presence.
+    public static FrozenDictionary<uint, uint[]> TalentRankPredecessors = FrozenDictionary<uint, uint[]>.Empty;
+    // Inverse mapping: spell id → array of ALL OTHER rank spell ids of the same talent
+    // (both lower and higher). Used to clean up synthesized predecessor entries when the
+    // server unlearns one rank (respec): any sibling rank still in the known set must also
+    // be removed, because the talent has been fully refunded.
+    public static FrozenDictionary<uint, uint[]> TalentRankSiblings = FrozenDictionary<uint, uint[]>.Empty;
     public static FrozenDictionary<uint, uint> TransportPeriods = FrozenDictionary<uint, uint>.Empty;
     public static FrozenDictionary<uint, string> AreaNames = FrozenDictionary<uint, string>.Empty;
     public static FrozenDictionary<string, uint> AreaIdsByName = FrozenDictionary<string, uint>.Empty;
@@ -752,6 +766,7 @@ public static partial class GameData
             LoadGems,
             LoadCreatureDisplayInfo,
             LoadCreatureModelCollisionHeights,
+            LoadTalentSpellRanks,
             LoadTransports,
             LoadAreaNames,
             LoadRaceFaction,
@@ -1300,6 +1315,49 @@ public static partial class GameData
             dict.Add(modelId, new CreatureModelCollisionHeight(modelScale, collisionHeight, collisionHeightMounted));
         }
         CreatureModelCollisionHeights = dict.ToFrozenDictionary();
+    }
+
+    // Loads per-talent ordered spell-rank arrays from CSV/TalentSpellRanks.csv (built from
+    // the 1.14.2 Talent.dbc via wago.tools — 432 talents across all 9 vanilla classes).
+    // Builds two dictionaries:
+    //   - TalentRankPredecessors: spellId → all LOWER-rank ids of the same talent
+    //   - TalentRankSiblings:     spellId → all OTHER rank ids of the same talent
+    // Used by the SpellHandler to inject synthetic "learned" entries for lower talent
+    // ranks (which the vanilla server unlearns when the player spends a point higher),
+    // making IsPlayerSpell(rankN) return true for every rank the player has earned.
+    public static void LoadTalentSpellRanks()
+    {
+        var path = Path.Combine("CSV", "TalentSpellRanks.csv");
+        if (!System.IO.File.Exists(path))
+            return;
+        using var reader = Sep.Reader(o => o with { HasHeader = true }).FromFile(path);
+        var predecessors = new Dictionary<uint, uint[]>(2048);
+        var siblings = new Dictionary<uint, uint[]>(2048);
+        foreach (var row in reader)
+        {
+            // Columns: TalentID, ClassMask, TabID, Rank1..Rank5
+            var ranks = new System.Collections.Generic.List<uint>(5);
+            for (int col = 3; col <= 7; col++)
+            {
+                if (!uint.TryParse(row[col].Span, out uint sid) || sid == 0)
+                    continue;
+                ranks.Add(sid);
+            }
+            for (int i = 0; i < ranks.Count; i++)
+            {
+                uint thisRank = ranks[i];
+                // Predecessors: ranks[0..i-1] preserved in ascending-rank order.
+                uint[] preds = i == 0 ? Array.Empty<uint>() : ranks.GetRange(0, i).ToArray();
+                predecessors[thisRank] = preds;
+                // Siblings: every other rank in the talent group (lower + higher).
+                var sib = new System.Collections.Generic.List<uint>(ranks.Count - 1);
+                for (int j = 0; j < ranks.Count; j++)
+                    if (j != i) sib.Add(ranks[j]);
+                siblings[thisRank] = sib.ToArray();
+            }
+        }
+        TalentRankPredecessors = predecessors.ToFrozenDictionary();
+        TalentRankSiblings = siblings.ToFrozenDictionary();
     }
 
     public static void LoadTransports()

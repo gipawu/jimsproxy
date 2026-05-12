@@ -33,7 +33,10 @@ public partial class WorldClient
         // as visible auras. InitialLogin == true sends the full list; subsequent updates may
         // be deltas, so we don't clear unconditionally.
         if (spells.InitialLogin)
+        {
             GetSession().GameState.CurrentPlayerKnownSpells.Clear();
+            GetSession().GameState.SynthesizedTalentRanks.Clear();
+        }
         for (ushort i = 0; i < spellCount; i++)
         {
             uint spellId;
@@ -44,6 +47,25 @@ public partial class WorldClient
             spells.KnownSpells.Add(spellId);
             GetSession().GameState.CurrentPlayerKnownSpells.Add(spellId);
             packet.ReadInt16();
+        }
+        // Talent-passive-rank injection (LibClassicDurations etc. break without this).
+        // Inline into the initial SendKnownSpells list so the modern client treats every
+        // synthesized predecessor as already-known at login — no spell-learned toast spam,
+        // no separate SMSG_LEARNED_SPELLS round-trip. Reconcile after building the list so
+        // SynthesizedTalentRanks reflects the same state we're about to emit.
+        var realKnown = GetSession().GameState.CurrentPlayerKnownSpells;
+        var synthesizedSet = GetSession().GameState.SynthesizedTalentRanks;
+        foreach (var sid in realKnown)
+        {
+            if (!GameData.TalentRankPredecessors.TryGetValue(sid, out var preds))
+                continue;
+            foreach (var pred in preds)
+            {
+                if (realKnown.Contains(pred))
+                    continue;
+                if (synthesizedSet.Add(pred))
+                    spells.KnownSpells.Add(pred);
+            }
         }
         SendPacketToClient(spells);
 
@@ -112,6 +134,7 @@ public partial class WorldClient
         knownSpellsSuperseded.Remove(supercededId);
         knownSpellsSuperseded.Add(spellId);
         SendPacketToClient(spells);
+        ReconcileTalentRankInjection();
     }
 
     [PacketHandler(Opcode.SMSG_LEARNED_SPELL)]
@@ -124,6 +147,86 @@ public partial class WorldClient
         // outbound CMSG_CAST_SPELL guard doesn't false-positive on trainer/talent grants.
         GetSession().GameState.CurrentPlayerKnownSpells.Add(spellId);
         SendPacketToClient(spells);
+        ReconcileTalentRankInjection();
+    }
+
+    // Reconciles SynthesizedTalentRanks against the real CurrentPlayerKnownSpells set.
+    // For every known spell that's a talent rank, the proxy needs the modern client's
+    // known-spells set to also contain every LOWER-rank spell id of the same talent —
+    // otherwise addons probing IsPlayerSpell(rank1Id) get false even when the player
+    // has spent points there (vanilla server LearnTalent calls RemoveSpell on the
+    // previous rank, so only the highest stays in the server-side known list).
+    //
+    // Computes the delta between the *desired* synthesized set (predecessors of every
+    // real known spell, minus anything the server already grants directly) and the
+    // *current* synthesized set, then emits SMSG_LEARNED_SPELLS / SMSG_UNLEARNED_SPELLS
+    // to bring the modern client in line. Both packets cap at 8 spells per emit, so
+    // large deltas (e.g. respec wiping 30+ ranks) are split across multiple packets.
+    // The LEARNED packets carry SuppressMessaging so the client doesn't fire a
+    // "new spell learned" toast or callback for synthesized ranks.
+    private void ReconcileTalentRankInjection()
+    {
+        if (GameData.TalentRankPredecessors.Count == 0)
+            return;
+
+        var realKnown = GetSession().GameState.CurrentPlayerKnownSpells;
+        var synthesized = GetSession().GameState.SynthesizedTalentRanks;
+
+        var desired = new HashSet<uint>();
+        foreach (var sid in realKnown)
+        {
+            if (!GameData.TalentRankPredecessors.TryGetValue(sid, out var preds))
+                continue;
+            foreach (var p in preds)
+            {
+                if (!realKnown.Contains(p))
+                    desired.Add(p);
+            }
+        }
+
+        var toAdd = new List<uint>();
+        foreach (var d in desired)
+            if (!synthesized.Contains(d))
+                toAdd.Add(d);
+
+        var toRemove = new List<uint>();
+        foreach (var s in synthesized)
+            if (!desired.Contains(s))
+                toRemove.Add(s);
+
+        if (toAdd.Count == 0 && toRemove.Count == 0)
+            return;
+
+        // Apply tracking first so any callback re-entering through a packet handler sees
+        // the post-reconcile state.
+        foreach (var x in toAdd) synthesized.Add(x);
+        foreach (var x in toRemove) synthesized.Remove(x);
+
+        const int BatchSize = 8;
+        for (int offset = 0; offset < toAdd.Count; offset += BatchSize)
+        {
+            var batch = new LearnedSpells();
+            batch.SuppressMessaging = true;
+            for (int j = offset; j < toAdd.Count && j < offset + BatchSize; j++)
+                batch.Spells.Add(toAdd[j]);
+            SendPacketToClient(batch);
+        }
+        for (int offset = 0; offset < toRemove.Count; offset += BatchSize)
+        {
+            var batch = new UnlearnedSpells();
+            batch.SuppressMessaging = true;
+            for (int j = offset; j < toRemove.Count && j < offset + BatchSize; j++)
+                batch.Spells.Add(toRemove[j]);
+            SendPacketToClient(batch);
+        }
+
+        Log.Event("spell.talent_rank_injection.reconciled", new
+        {
+            added = toAdd.Count,
+            removed = toRemove.Count,
+            real_known = realKnown.Count,
+            synthesized = synthesized.Count,
+        });
     }
 
     [PacketHandler(Opcode.SMSG_SEND_UNLEARN_SPELLS)]
@@ -141,6 +244,7 @@ public partial class WorldClient
             knownSpellsSendUnlearn.Remove(spellId);
         }
         SendPacketToClient(spells);
+        ReconcileTalentRankInjection();
     }
 
     [PacketHandler(Opcode.SMSG_UNLEARNED_SPELLS)]
@@ -160,6 +264,7 @@ public partial class WorldClient
         // for an unknown spell as cheating and bans).
         GetSession().GameState.CurrentPlayerKnownSpells.Remove(spellId);
         SendPacketToClient(spells);
+        ReconcileTalentRankInjection();
     }
 
     [PacketHandler(Opcode.SMSG_CAST_FAILED)]
