@@ -19,6 +19,14 @@ using System;
 
 namespace HermesProxy;
 
+public sealed record PendingPetScale(
+    WowGuid128 Guid,
+    uint Entry,
+    uint DisplayId,
+    float RawScale,
+    float Cms,
+    bool IsWarlockPet);
+
 public class PlayerCache
 {
     public string? Name;
@@ -150,13 +158,11 @@ public sealed class GameSessionData
     public ConcurrentDictionary<WowGuid128, ushort> CachedPetCreatureFamily = new();
     public Dictionary<uint, WowGuid128> CachedPetNumbers = new();
     // Tracks quest ids the proxy has issued its own CMSG_QUERY_QUEST_INFO for.
-    // The 1.14 client caches quest templates in WDB and will not re-query for
-    // quests it already knows, so SMSG_QUERY_QUEST_INFO_RESPONSE never reaches
-    // the proxy and the QuestTemplate stays empty. That breaks the item-objective
-    // overlay in ReadQuestLogEntry (no template = no item objectives to overlay).
-    // We proactively query on first sight of any quest in the player's log
-    // without a cached template; this set prevents spamming.
     public HashSet<uint> ProxyIssuedQuestInfoQueries = new();
+    // JimsProxy (pet-scale-resolve-race): Pet GUIDs whose first SCALE_X arrived
+    // before SMSG_QUERY_CREATURE_RESPONSE landed.
+    public Dictionary<WowGuid128, PendingPetScale> PetScaleResolvePending = new();
+    public HashSet<uint> PetScaleProxyQueriedEntries = new();
     public string LeftChannelName = "";
     public bool IsPassingOnLoot;
     public int GroupUpdateCounter;

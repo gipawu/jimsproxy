@@ -50,6 +50,22 @@ public static partial class GameData
     public static FrozenDictionary<uint, uint> Gems = FrozenDictionary<uint, uint>.Empty;
     public static FrozenDictionary<uint, CreatureDisplayInfo> CreatureDisplayInfos = FrozenDictionary<uint, CreatureDisplayInfo>.Empty;
     public static FrozenDictionary<uint, CreatureModelCollisionHeight> CreatureModelCollisionHeights = FrozenDictionary<uint, CreatureModelCollisionHeight>.Empty;
+    // JimsProxy (pet-scale-family-table): CreatureFamily.dbc carries Blizzard's
+    // per-family pet scale formula — MinScale at level 1, MaxScale at level 60,
+    // linear interpolation between. Used by the pet inverse-CMS bake-in in
+    // UpdateHandler so every hunter pet family scales to vanilla-correct size
+    // based on its actual level, replacing the empirical K_hunter / K_warlock
+    // constants for any family present in this table.
+    public static FrozenDictionary<int, CreatureFamilyData> CreatureFamilies = FrozenDictionary<int, CreatureFamilyData>.Empty;
+    // JimsProxy (npc-scale-vanilla-parity): vanilla CreatureModelScale per DisplayID,
+    // extracted authoritatively from the 1.12.1.5875 client's CreatureDisplayInfo.dbc.
+    // Used as the render-factor compensation when bridging Kronos (TC-1.12, wire=CMS_v)
+    // to modern Classic 1.14 (renders wire × CMS_m × ModelScale). Inverse-CMS bake-in
+    // becomes: emit = (wire / CMS_m) × CMS_v = CMS_v² / CMS_m, which equals what the
+    // vanilla 1.12 client rendered (CMS_v × CMS_v × ModelScale). Per-DisplayID not per-
+    // ModelID — different display variants of the same model have different CMS values.
+    // 8,495 entries.
+    public static FrozenDictionary<uint, float> VanillaCreatureModelScales = FrozenDictionary<uint, float>.Empty;
     public static FrozenDictionary<uint, uint> TransportPeriods = FrozenDictionary<uint, uint>.Empty;
     public static FrozenDictionary<uint, string> AreaNames = FrozenDictionary<uint, string>.Empty;
     public static FrozenDictionary<string, uint> AreaIdsByName = FrozenDictionary<string, uint>.Empty;
@@ -752,6 +768,8 @@ public static partial class GameData
             LoadGems,
             LoadCreatureDisplayInfo,
             LoadCreatureModelCollisionHeights,
+            LoadCreatureFamilies,
+            LoadVanillaCreatureModelScales,
             LoadTransports,
             LoadAreaNames,
             LoadRaceFaction,
@@ -1300,6 +1318,64 @@ public static partial class GameData
             dict.Add(modelId, new CreatureModelCollisionHeight(modelScale, collisionHeight, collisionHeightMounted));
         }
         CreatureModelCollisionHeights = dict.ToFrozenDictionary();
+    }
+
+    // JimsProxy (pet-scale-family-table): CreatureFamily.dbc dumped from
+    // wago.tools Classic Era 1.14.2.42597 (build matches the rest of our
+    // CSV refresh). Columns we care about:
+    //   ID, Name_lang, MinScale, MinScaleLevel, MaxScale, MaxScaleLevel
+    // The remaining columns (PetFoodMask, PetTalentType, IconFileID, SkillLine_*)
+    // are not used by the proxy and are ignored at load.
+    public static void LoadCreatureFamilies()
+    {
+        var path = Path.Combine("CSV", "CreatureFamily.csv");
+        using var reader = Sep.Reader(o => o with { HasHeader = true, Unescape = true }).FromFile(path);
+        var dict = new Dictionary<int, CreatureFamilyData>(32);
+
+        foreach (var row in reader)
+        {
+            int id = int.Parse(row[0].Span);
+            // row[1] = Name_lang (skipped — diagnostic only)
+            float minScale = float.Parse(row[2].Span);
+            int minScaleLevel = int.Parse(row[3].Span);
+            float maxScale = float.Parse(row[4].Span);
+            int maxScaleLevel = int.Parse(row[5].Span);
+            dict.Add(id, new CreatureFamilyData(id, minScale, minScaleLevel, maxScale, maxScaleLevel));
+        }
+        CreatureFamilies = dict.ToFrozenDictionary();
+    }
+
+    // Returns the family's MaxScale value as a flat K. The vanilla server already
+    // lerps the level-based growth via UNIT_FIELD_SCALE_X on the wire (verified
+    // 2026-05-11: Bruce L16 raw_scale=0.7 = exactly the CreatureFamily 0.6→1.0
+    // lerp for boar at L16). Applying the lerp again in the proxy would
+    // double-multiply and render every pet noticeably small. MaxScale acts as
+    // the per-family M_native / ModelScale correction the modern client is
+    // missing — the same K=1.0 / K=0.7 / K=0.5 values empirical tuning landed on.
+    // Returns 1.0 for unknown families (legacy fallback behavior).
+    public static float GetPetFamilyScale(int familyId)
+    {
+        if (!CreatureFamilies.TryGetValue(familyId, out var f))
+            return 1.0f;
+        return f.MaxScale;
+    }
+
+    public static void LoadVanillaCreatureModelScales()
+    {
+        var path = Path.Combine("CSV", "CreatureDisplayInfoVanilla.csv");
+        if (!File.Exists(path))
+            return;
+        using var reader = Sep.Reader(o => o with { HasHeader = true }).FromFile(path);
+        var dict = new Dictionary<uint, float>(8500);
+        foreach (var row in reader)
+        {
+            if (!uint.TryParse(row[0].Span, out uint displayId))
+                continue;
+            if (!float.TryParse(row[1].Span, System.Globalization.CultureInfo.InvariantCulture, out float cms))
+                continue;
+            dict[displayId] = cms;
+        }
+        VanillaCreatureModelScales = dict.ToFrozenDictionary();
     }
 
     public static void LoadTransports()
@@ -5025,6 +5101,7 @@ public static partial class GameData
 
     public record CreatureDisplayInfo(uint ModelId, float DisplayScale);
     public record CreatureModelCollisionHeight(float ModelScale, float Height, float MountHeight);
+    public record CreatureFamilyData(int Id, float MinScale, int MinScaleLevel, float MaxScale, int MaxScaleLevel);
 
     // Hotfix structures
     public sealed class AreaTrigger
