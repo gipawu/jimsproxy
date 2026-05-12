@@ -50,22 +50,10 @@ public static partial class GameData
     public static FrozenDictionary<uint, uint> Gems = FrozenDictionary<uint, uint>.Empty;
     public static FrozenDictionary<uint, CreatureDisplayInfo> CreatureDisplayInfos = FrozenDictionary<uint, CreatureDisplayInfo>.Empty;
     public static FrozenDictionary<uint, CreatureModelCollisionHeight> CreatureModelCollisionHeights = FrozenDictionary<uint, CreatureModelCollisionHeight>.Empty;
-    // JimsProxy (pet-scale-family-table): CreatureFamily.dbc carries Blizzard's
-    // per-family pet scale formula — MinScale at level 1, MaxScale at level 60,
-    // linear interpolation between. Used by the pet inverse-CMS bake-in in
-    // UpdateHandler so every hunter pet family scales to vanilla-correct size
-    // based on its actual level, replacing the empirical K_hunter / K_warlock
-    // constants for any family present in this table.
     public static FrozenDictionary<int, CreatureFamilyData> CreatureFamilies = FrozenDictionary<int, CreatureFamilyData>.Empty;
-    // JimsProxy (npc-scale-vanilla-parity): vanilla CreatureModelScale per DisplayID,
-    // extracted authoritatively from the 1.12.1.5875 client's CreatureDisplayInfo.dbc.
-    // Used as the render-factor compensation when bridging Kronos (TC-1.12, wire=CMS_v)
-    // to modern Classic 1.14 (renders wire × CMS_m × ModelScale). Inverse-CMS bake-in
-    // becomes: emit = (wire / CMS_m) × CMS_v = CMS_v² / CMS_m, which equals what the
-    // vanilla 1.12 client rendered (CMS_v × CMS_v × ModelScale). Per-DisplayID not per-
-    // ModelID — different display variants of the same model have different CMS values.
-    // 8,495 entries.
     public static FrozenDictionary<uint, float> VanillaCreatureModelScales = FrozenDictionary<uint, float>.Empty;
+    public static FrozenDictionary<uint, uint[]> TalentRankPredecessors = FrozenDictionary<uint, uint[]>.Empty;
+    public static FrozenDictionary<uint, uint[]> TalentRankSiblings = FrozenDictionary<uint, uint[]>.Empty;
     public static FrozenDictionary<uint, uint> TransportPeriods = FrozenDictionary<uint, uint>.Empty;
     public static FrozenDictionary<uint, string> AreaNames = FrozenDictionary<uint, string>.Empty;
     public static FrozenDictionary<string, uint> AreaIdsByName = FrozenDictionary<string, uint>.Empty;
@@ -770,6 +758,7 @@ public static partial class GameData
             LoadCreatureModelCollisionHeights,
             LoadCreatureFamilies,
             LoadVanillaCreatureModelScales,
+            LoadTalentSpellRanks,
             LoadTransports,
             LoadAreaNames,
             LoadRaceFaction,
@@ -1320,12 +1309,6 @@ public static partial class GameData
         CreatureModelCollisionHeights = dict.ToFrozenDictionary();
     }
 
-    // JimsProxy (pet-scale-family-table): CreatureFamily.dbc dumped from
-    // wago.tools Classic Era 1.14.2.42597 (build matches the rest of our
-    // CSV refresh). Columns we care about:
-    //   ID, Name_lang, MinScale, MinScaleLevel, MaxScale, MaxScaleLevel
-    // The remaining columns (PetFoodMask, PetTalentType, IconFileID, SkillLine_*)
-    // are not used by the proxy and are ignored at load.
     public static void LoadCreatureFamilies()
     {
         var path = Path.Combine("CSV", "CreatureFamily.csv");
@@ -1335,7 +1318,6 @@ public static partial class GameData
         foreach (var row in reader)
         {
             int id = int.Parse(row[0].Span);
-            // row[1] = Name_lang (skipped — diagnostic only)
             float minScale = float.Parse(row[2].Span);
             int minScaleLevel = int.Parse(row[3].Span);
             float maxScale = float.Parse(row[4].Span);
@@ -1345,14 +1327,6 @@ public static partial class GameData
         CreatureFamilies = dict.ToFrozenDictionary();
     }
 
-    // Returns the family's MaxScale value as a flat K. The vanilla server already
-    // lerps the level-based growth via UNIT_FIELD_SCALE_X on the wire (verified
-    // 2026-05-11: Bruce L16 raw_scale=0.7 = exactly the CreatureFamily 0.6→1.0
-    // lerp for boar at L16). Applying the lerp again in the proxy would
-    // double-multiply and render every pet noticeably small. MaxScale acts as
-    // the per-family M_native / ModelScale correction the modern client is
-    // missing — the same K=1.0 / K=0.7 / K=0.5 values empirical tuning landed on.
-    // Returns 1.0 for unknown families (legacy fallback behavior).
     public static float GetPetFamilyScale(int familyId)
     {
         if (!CreatureFamilies.TryGetValue(familyId, out var f))
@@ -1376,6 +1350,38 @@ public static partial class GameData
             dict[displayId] = cms;
         }
         VanillaCreatureModelScales = dict.ToFrozenDictionary();
+    }
+
+    public static void LoadTalentSpellRanks()
+    {
+        var path = Path.Combine("CSV", "TalentSpellRanks.csv");
+        if (!System.IO.File.Exists(path))
+            return;
+        using var reader = Sep.Reader(o => o with { HasHeader = true }).FromFile(path);
+        var predecessors = new Dictionary<uint, uint[]>(2048);
+        var siblings = new Dictionary<uint, uint[]>(2048);
+        foreach (var row in reader)
+        {
+            var ranks = new System.Collections.Generic.List<uint>(5);
+            for (int col = 3; col <= 7; col++)
+            {
+                if (!uint.TryParse(row[col].Span, out uint sid) || sid == 0)
+                    continue;
+                ranks.Add(sid);
+            }
+            for (int i = 0; i < ranks.Count; i++)
+            {
+                uint thisRank = ranks[i];
+                uint[] preds = i == 0 ? Array.Empty<uint>() : ranks.GetRange(0, i).ToArray();
+                predecessors[thisRank] = preds;
+                var sib = new System.Collections.Generic.List<uint>(ranks.Count - 1);
+                for (int j = 0; j < ranks.Count; j++)
+                    if (j != i) sib.Add(ranks[j]);
+                siblings[thisRank] = sib.ToArray();
+            }
+        }
+        TalentRankPredecessors = predecessors.ToFrozenDictionary();
+        TalentRankSiblings = siblings.ToFrozenDictionary();
     }
 
     public static void LoadTransports()

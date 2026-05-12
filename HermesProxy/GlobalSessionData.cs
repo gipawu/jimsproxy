@@ -142,6 +142,16 @@ public sealed class GameSessionData
     // aura array (vanilla server buries some passives below the visible-aura cutoff).
     // Walked alongside active auras when summing crit aura contributions.
     public System.Collections.Generic.HashSet<uint> CurrentPlayerKnownSpells = new();
+    //MIRASU - Talent rank passive spell ids the proxy has synthesized into the modern
+    //MIRASU   client's known-spells set on top of CurrentPlayerKnownSpells. Vanilla's
+    //MIRASU   Player::LearnTalent path only keeps the highest active rank in the spell
+    //MIRASU   list (lower ranks get RemoveSpell'd), so IsPlayerSpell(rank1Id) returns
+    //MIRASU   false on the 1.14 client for every multi-rank talent the player has spent
+    //MIRASU   points in — breaking talent-keyed lookups in LibClassicDurations and
+    //MIRASU   similar addons. SpellHandler injects predecessor ranks from GameData's
+    //MIRASU   TalentRankPredecessors table and tracks the synthesized set here so the
+    //MIRASU   reconcile step can withdraw them on respec.
+    public System.Collections.Generic.HashSet<uint> SynthesizedTalentRanks = new();
     // JimsProxy: per-unit HP cache used to compute overhealing on legacy servers
     // that don't include OverHeal in SMSG_SPELL_HEAL_LOG (1.12 vanilla). Authoritative
     // source is UNIT_FIELD_HEALTH / UNIT_FIELD_MAXHEALTH from SMSG_UPDATE_OBJECT;
