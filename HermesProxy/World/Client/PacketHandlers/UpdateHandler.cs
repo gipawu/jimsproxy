@@ -4218,10 +4218,26 @@ public partial class WorldClient
                 // wire × CMS_m × ModelScale render then yields CMS_v² × ModelScale —
                 // ~2.2× too big for ogres at CMS_v=2.2, or ~half-size for Small Crag
                 // Boar at CMS_v=0.5. Strip the pre-scaling so the client lands at
-                // vanilla baseline. Symmetric guard — fires when CMS_v deviates from
-                // 1.0 in either direction (covers oversize ogres and undersize boars),
-                // skips the wire==CMS_v==1.0 case where every normal creature lives.
-                bool wirePreScaled = hasVanillaCms && MathF.Abs(cmsVanilla - 1.0f) > 0.01f && MathF.Abs(rawScale - cmsVanilla) < 0.01f;
+                // vanilla baseline.
+                //
+                // Tolerance is RATIO-based now (was absolute 0.01): Twinstar's data
+                // has a +10-20% bias on some entries (sibling creatures sharing a
+                // model where one has wire==CMS_v exact, another has wire ≈ CMS_v *
+                // 1.1-1.2). Examples in Wetlands: Mottled Raptor variants on model
+                // 137 (one entry exact, another at CMS_v * 1.175), Wendigo model 34
+                // (one exact, another at CMS_v * 1.109). Absolute 0.01 caught the
+                // exact-match siblings only; ratio [1.0, 1.5) catches the +bias
+                // ones too without false-positives on CMS_v==1.0 creatures with an
+                // intentionally bigger wire (those fail the first condition).
+                // Lower bound 1.0 (wire never smaller than CMS_v in observed escape
+                // cases). Upper 1.5 leaves room for clearly-different-intent wires
+                // (e.g. cms_v=0.1 with wire=0.3 at ratio 3.0, where Twinstar likely
+                // means a different scale).
+                bool wirePreScaled = hasVanillaCms
+                    && MathF.Abs(cmsVanilla - 1.0f) > 0.01f
+                    && MathF.Abs(rawScale - 1.0f) > 0.01f   // skip server-default wire
+                    && rawScale >= cmsVanilla
+                    && rawScale < cmsVanilla * 1.5f;
                 float effectiveWire = wirePreScaled ? 1.0f : rawScale;
                 float npcEmit = (effectiveWire / cms) * K_npc;
 
