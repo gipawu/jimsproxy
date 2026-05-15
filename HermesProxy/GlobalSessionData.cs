@@ -987,13 +987,18 @@ public sealed class GameSessionData
 
     /// <summary>
     /// Try to find and dequeue a pending cast by SpellId.
-    /// Uses FIFO order since TCP guarantees packet ordering.
+    /// Prefers non-started entries when multiple entries match the same spell.
+    /// A started entry (HasStarted=true) is being tracked by the SPELL_START →
+    /// SPELL_GO lifecycle; CAST_FAILED for a rapid same-spell duplicate should
+    /// consume the non-started entry (the rejected cast) rather than the started
+    /// one (whose SPELL_GO is still in flight).
     /// </summary>
     public bool TryDequeuePendingNormalCast(uint spellId, out ClientCastRequest? cast)
     {
-        // Since TCP preserves order, the first matching SpellId is the correct one
         var pending = new List<ClientCastRequest>();
         cast = null;
+        ClientCastRequest? startedFallback = null;
+        int startedFallbackIndex = -1;
 
         lock (PendingCastsLock)
         {
@@ -1001,7 +1006,20 @@ public sealed class GameSessionData
             {
                 if (cast == null && CastMatchesSpellId(current, spellId))
                 {
-                    cast = current;
+                    if (!current.HasStarted)
+                    {
+                        cast = current;
+                    }
+                    else if (startedFallback == null)
+                    {
+                        startedFallback = current;
+                        startedFallbackIndex = pending.Count;
+                        pending.Add(current);
+                    }
+                    else
+                    {
+                        pending.Add(current);
+                    }
                 }
                 else
                 {
@@ -1009,7 +1027,13 @@ public sealed class GameSessionData
                 }
             }
 
-            // Re-enqueue non-matching casts
+            // No non-started match found — fall back to the first started entry
+            if (cast == null && startedFallback != null)
+            {
+                cast = startedFallback;
+                pending.RemoveAt(startedFallbackIndex);
+            }
+
             foreach (var item in pending)
             {
                 PendingNormalCasts.Enqueue(item);
