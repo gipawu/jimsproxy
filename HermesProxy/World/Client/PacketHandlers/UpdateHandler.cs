@@ -13,6 +13,7 @@ using System.Collections;
 using System.Collections.Frozen;
 using System.Collections.Generic;
 using System.Linq;
+using System.Runtime.CompilerServices;
 
 namespace HermesProxy.World.Client;
 
@@ -48,6 +49,53 @@ public partial class WorldClient
         { 59, 0.75f },
         { 60, 0.75f },
     }.ToFrozenDictionary();
+
+    // (DisplayId, wire * 1000 rounded) pairs where Twinstar's bias on top of CMS_v
+    // is the deliberate vanilla-intended visible scale, not a pre-scaled sibling.
+    // The wirePreScaled heuristic would otherwise catch and shrink these to CMS_v,
+    // visibly shrinking Cairne Bloodhoof / Mr. Smite / Lady Onyxia and other
+    // leader-class creatures. List built from a vmangos creature_template audit
+    // against the heuristic — these are the 32 entries where post-heuristic render
+    // moved FURTHER from vmangos display_scale1 than pre-heuristic pass-through.
+    // Encoding `wire * 1000` rounded to int avoids float comparison in the hot path.
+    private static readonly FrozenSet<long> ScaleExemptDeliberateBias = new HashSet<long>
+    {
+        EncodeScaleBiasKey(831,   1.50f),  // Large Loch Crocolisk
+        EncodeScaleBiasKey(1941,  1.62f),  // Disciple of Naralex
+        EncodeScaleBiasKey(2017,  1.40f),  // Bleakheart Shadowstalker
+        EncodeScaleBiasKey(2026,  1.62f),  // Mr. Smite
+        EncodeScaleBiasKey(4307,  1.62f),  // Cairne Bloodhoof
+        EncodeScaleBiasKey(4519,  1.62f),  // Arch Druid Hamuul Runetotem
+        EncodeScaleBiasKey(5436,  1.20f),  // Gnome Pit Crewman
+        EncodeScaleBiasKey(5437,  1.20f),  // Gnome Pit Crewman (sibling display)
+        EncodeScaleBiasKey(5438,  1.20f),  // Gnome Pit Boss
+        EncodeScaleBiasKey(5443,  1.20f),  // Rizzle Brassbolts
+        EncodeScaleBiasKey(5647,  1.09f),  // Talvash del Kissel
+        EncodeScaleBiasKey(5781,  1.50f),  // Firesworn
+        EncodeScaleBiasKey(6633,  1.10f),  // Greater Silithid Flayer
+        EncodeScaleBiasKey(6633,  1.40f),  // Supreme Silithid Flayer
+        EncodeScaleBiasKey(6981,  1.26f),  // Leprous Defender
+        EncodeScaleBiasKey(6982,  1.26f),  // Leprous Defender (sibling display)
+        EncodeScaleBiasKey(7350,  1.10f),  // Greater Silithid Flayer
+        EncodeScaleBiasKey(7350,  1.40f),  // Supreme Silithid Flayer
+        EncodeScaleBiasKey(7671,  1.20f),  // Murk Worm
+        EncodeScaleBiasKey(7852,  1.09f),  // Felix Whindlebolt
+        EncodeScaleBiasKey(8309,  1.80f),  // Lady Onyxia
+        EncodeScaleBiasKey(9272,  1.48f),  // Bulrug
+        EncodeScaleBiasKey(9900,  1.21f),  // Pao'ka Swiftmountain
+        EncodeScaleBiasKey(10069, 1.62f),  // Mulgris Deepriver
+        EncodeScaleBiasKey(10989, 1.03f),  // Drag Master Miglen
+        EncodeScaleBiasKey(11091, 1.40f),  // Supreme Silithid Flayer
+        EncodeScaleBiasKey(11096, 1.10f),  // Greater Silithid Flayer
+        EncodeScaleBiasKey(11096, 1.40f),  // Supreme Silithid Flayer
+        EncodeScaleBiasKey(11344, 1.40f),  // Xavian Betrayer
+        EncodeScaleBiasKey(11346, 1.40f),  // Xavian Felsworn
+        EncodeScaleBiasKey(11797, 1.62f),  // Maggran Earthbinder
+    }.ToFrozenSet();
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static long EncodeScaleBiasKey(uint displayId, float wire)
+        => ((long)displayId << 32) | (uint)MathF.Round(wire * 1000f);
 
     // Handlers for SMSG opcodes coming the legacy world server
     [PacketHandler(Opcode.SMSG_DESTROY_OBJECT)]
@@ -4228,23 +4276,58 @@ public partial class WorldClient
                 // wire × CMS_m × ModelScale render then yields CMS_v² × ModelScale —
                 // ~2.2× too big for ogres at CMS_v=2.2, or ~half-size for Small Crag
                 // Boar at CMS_v=0.5. Strip the pre-scaling so the client lands at
-                // vanilla baseline. Symmetric guard — fires when CMS_v deviates from
-                // 1.0 in either direction (covers oversize ogres and undersize boars),
-                // skips the wire==CMS_v==1.0 case where every normal creature lives.
-                bool wirePreScaled = hasVanillaCms && MathF.Abs(cmsVanilla - 1.0f) > 0.01f && MathF.Abs(rawScale - cmsVanilla) < 0.01f;
+                // vanilla baseline.
+                //
+                // Tolerance is RATIO-based now (was absolute 0.01): Twinstar's data
+                // has a +10-20% bias on some entries (sibling creatures sharing a
+                // model where one has wire==CMS_v exact, another has wire ≈ CMS_v *
+                // 1.1-1.2). Examples in Wetlands: Mottled Raptor variants on model
+                // 137 (one entry exact, another at CMS_v * 1.175), Wendigo model 34
+                // (one exact, another at CMS_v * 1.109).
+                //
+                // Upper bound is split by CMS_v magnitude. For CMS_v < 1.0
+                // (visibly-small creatures: bats, crocs, wolves, crabs, scorpids),
+                // ratios can run much higher (Duskbat wire 0.40 / CMS_v 0.10 = 4.0,
+                // Loch Crocolisk 0.70 / 0.40 = 1.75) while still being the genuine
+                // vanilla-intended scale; without stripping, modern renders at
+                // wire × CMS_m which is too small to interact with (Loch Croc at
+                // 0.28, Lava Crab at 0.03). Cap at 5.0 to skip displays with
+                // CMS_v ≤ 0.01 (invisible spell-target objects like Andorhal Tower
+                // Marks of Detonation — wire 0.10 / CMS_v 0.01 = 10.0, intended
+                // invisible).
+                //
+                // For CMS_v >= 1.0 (boss-class creatures with intentionally large
+                // wire bias), keep the tight 1.5 bound so we don't shrink Gri'lek,
+                // Crowd Pummeler 9-60, Viscous Fallout etc. below their current
+                // bigger-than-CMS_v render.
+                float upperRatio = cmsVanilla < 1.0f ? 5.0f : 1.5f;
+                // Skip the strip for displays where vanilla server intent is
+                // deliberately a +bias over CMS_v (Cairne, Mr. Smite, Lady Onyxia,
+                // tauren chiefs, Silithid Flayers, Gnomeregan denizens, etc.).
+                // Without this exemption the heuristic shrinks them visibly below
+                // their vanilla render. List is sourced from the vmangos
+                // display_scale1 audit — see ScaleExemptDeliberateBias above.
+                bool isDeliberateBias = displayId > 0
+                    && ScaleExemptDeliberateBias.Contains(EncodeScaleBiasKey((uint)displayId, rawScale));
+                bool wirePreScaled = hasVanillaCms
+                    && !isDeliberateBias
+                    && MathF.Abs(cmsVanilla - 1.0f) > 0.01f
+                    && MathF.Abs(rawScale - 1.0f) > 0.01f   // skip server-default wire
+                    && rawScale >= cmsVanilla
+                    && rawScale < cmsVanilla * upperRatio;
                 float effectiveWire = wirePreScaled ? 1.0f : rawScale;
                 float npcEmit = (effectiveWire / cms) * K_npc;
 
-                // M2 mesh-adjust: per-ModelId compensation for 1.14 render-time scale
-                // divergences that don't appear in any DBC/M2 file (see M2MeshAdjust
-                // table comment). Applied AFTER the CMS bake-in so it stacks cleanly.
+                // M2 mesh-adjust: per-ModelId compensation now handled via
+                // CreatureDisplayInfo CMS hotfix (CSV/Hotfix/CreatureDisplayInfo1.csv)
+                // so the modern client's intrinsic CMS already carries the K factor.
+                // NPCs render at wire × hotfix_CMS × ModelScale, matching the K-applied
+                // target without a proxy wire multiplier. Keeping the variable for the
+                // diagnostic event but not applying it here.
                 int modelIdForAdjust = displayId > 0 ? (int)GameData.GetDisplayInfo((uint)displayId).ModelId : 0;
                 float meshAdjust = 1.0f;
                 if (modelIdForAdjust > 0 && M2MeshAdjust.TryGetValue(modelIdForAdjust, out var adj))
-                {
                     meshAdjust = adj;
-                    npcEmit *= meshAdjust;
-                }
                 updateData.ObjectData.Scale = npcEmit;
 
                 Log.Event("unit.npc_scale.applied", new
@@ -4265,25 +4348,22 @@ public partial class WorldClient
             }
             else if (objectType == ObjectType.Player || objectType == ObjectType.ActivePlayer)
             {
-                // Players bypass the NPC inverse-CMS path because their wire_scale isn't
-                // CMS_v — it's the server-side per-character scale (typically 1.0 for
-                // unmounted humanoids). But the per-ModelId M2 mesh-adjust still applies:
-                // tauren players (DisplayID 59 male, 60 female per ChrRaces) render larger
-                // in 1.14 than 1.12 with identical wire+DBC, so we compensate here too.
+                // K=0.75 for tauren is now baked into the CreatureDisplayInfo CMS hotfix
+                // (CSV/Hotfix/CreatureDisplayInfo1.csv) — id 59 CMS = 1.0125, id 60 CMS = 0.75.
+                // The 1.14 client renders all paths as wire × CMS × ModelScale, so the
+                // hotfix CMS alone yields the K-applied target without a proxy wire
+                // multiplier. Post-shift recompute uses the same CMS, so login and
+                // post-shift now match. Diagnostic event for visibility.
                 int modelIdForAdjust = displayId > 0 ? (int)GameData.GetDisplayInfo((uint)displayId).ModelId : 0;
                 if (modelIdForAdjust > 0 && M2MeshAdjust.TryGetValue(modelIdForAdjust, out var playerAdj))
                 {
-                    float playerEmit = rawScale * playerAdj;
-                    updateData.ObjectData.Scale = playerEmit;
-
-                    Log.Event("unit.player_scale.applied", new
+                    Log.Event("unit.player_scale.skipped", new
                     {
                         guid = guid.ToString(),
                         display_id = displayId,
                         model_id = modelIdForAdjust,
                         raw_scale = rawScale,
-                        mesh_adjust = playerAdj,
-                        emitted_scale = playerEmit,
+                        reason = "k_baked_in_cms_hotfix",
                     });
                 }
             }
