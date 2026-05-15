@@ -3992,19 +3992,33 @@ public static partial class GameData
         (99320u, 9421),
     };
 
-    // Mage mana gems were removed in retail; the modern client's SpellDB no longer
-    // recognizes vanilla "Restore Mana" rank spells (5405, 10052, 10053, 10054).
-    // Pre-#196 the client rendered the Use: line via its untouched retail ItemEffect
-    // record (whatever Blizzard left behind), and right-click consume worked because
-    // the legacy server handles the cast. PR #196's slot-mismatch hotfix overwrites
-    // those records with the vanilla SpellID, which the client can't resolve →
-    // Use: line vanishes and the item becomes inert.
+    // Items where PR #196's slot-mismatch ItemEffect hotfix breaks the modern
+    // client's "Use:" tooltip + on-use action, because the vanilla SpellID
+    // doesn't exist in the modern Classic Era SpellDB. The hotfix relocates
+    // the slot-1 retail record to slot 0, dragging the modern spell id (which
+    // the client can't resolve) with it. Skipping these entries leaves the
+    // client's cached retail ItemEffect untouched, restoring the pre-#196
+    // working behaviour where right-click consume goes to the legacy server
+    // for handling.
     //
-    // Items 5513/5514 are the only mana gems present in our ItemEffect CSVs (record
-    // ids 97663 / 97664). Citrine (5515) / Ruby (5516) have no CSV record so the
-    // slot-mismatch path never fires for them. Excluding 5513/5514 from the override
-    // restores the working pre-#196 behavior without affecting healthstones.
-    internal static readonly HashSet<uint> ManaGemItemEntries = new() { 5513u, 5514u, 5515u, 5516u };
+    //   Mana gems — removed in retail, vanilla "Restore Mana" rank spells
+    //   (5405/10052-54) absent from the modern SpellDB. Items 5513/5514 have
+    //   ItemEffect CSV records (97663/97664) that trip the slot-mismatch path;
+    //   Citrine (5515) / Ruby (5516) have none but are included defensively.
+    //
+    //   Warlock Spellstone — base rank (5522) has both a slot-0 vanilla record
+    //   (97949) and a slot-1 retail record (97950) carrying spell 32793, a
+    //   modern-only id that strips the "Use:" line when relocated. Greater /
+    //   Major (13456 / 13457) only have slot-0 records so they shouldn't hit
+    //   this path, but listing them defensively guards against server data
+    //   variance.
+    internal static readonly HashSet<uint> ItemEffectSlotMismatchExclusions = new()
+    {
+        // Mage mana gems
+        5513u, 5514u, 5515u, 5516u,
+        // Warlock spellstones
+        5522u, 13456u, 13457u,
+    };
 
     public static List<Server.Packets.HotFixMessage> PushKnownItemEffectFixes()
     {
@@ -4043,11 +4057,11 @@ public static partial class GameData
 
     public static Server.Packets.HotFixMessage? GenerateItemEffectUpdateIfNeeded(ItemTemplate item, byte slot)
     {
-        // Mana gems: leave the client's cached retail ItemEffect record untouched. Any
-        // mutation pushed via hotfix binds the record to a vanilla "Restore Mana" spell
-        // id the modern client's SpellDB doesn't know, stripping the Use: line. See
-        // ManaGemItemEntries above for the full rationale.
-        if (ManaGemItemEntries.Contains(item.Entry))
+        // Mana gems & warlock spellstones: leave the client's cached retail ItemEffect
+        // record untouched. Any mutation pushed via hotfix binds the record to a vanilla
+        // SpellID the modern client's SpellDB doesn't know, stripping the Use: line and
+        // making the item inert. See ItemEffectSlotMismatchExclusions above for details.
+        if (ItemEffectSlotMismatchExclusions.Contains(item.Entry))
             return null;
 
         ItemEffect? effect = GetItemEffectByItemId(item.Entry, slot);
