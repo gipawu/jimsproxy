@@ -4018,6 +4018,14 @@ public static partial class GameData
         5513u, 5514u, 5515u, 5516u,
         // Warlock spellstones
         5522u, 13456u, 13457u,
+        // Orb of Soran'ruk — hypothesis-A local-only test for PTR. Item has 3
+        // CSV records (97771 OnEquip Shadow Resistance, 97772 OnEquip spell
+        // damage, 97773 OnUse spell 18956). If PR #196's slot-mismatch
+        // mutation is what's breaking the item, excluding it leaves the
+        // client's cached retail record intact. NOT COMMITTED until PTR
+        // confirms — revert if force-push of 97773 turns out to be the real
+        // fix instead.
+        6898u,
     };
 
     public static List<Server.Packets.HotFixMessage> PushKnownItemEffectFixes()
