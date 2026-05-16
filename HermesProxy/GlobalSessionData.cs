@@ -187,6 +187,15 @@ public sealed class GameSessionData
     // before SMSG_QUERY_CREATURE_RESPONSE landed.
     public Dictionary<WowGuid128, PendingPetScale> PetScaleResolvePending = new();
     public HashSet<uint> PetScaleProxyQueriedEntries = new();
+    // JimsProxy: per-(caster, spell) timestamp of the last forwarded SMSG_SPELL_FAILED_OTHER,
+    // used to dedupe Kronos's auto-cast retry storm. Pet auto-cast can fire 5+/sec when the
+    // target is out of range or being killed, each emitting a fresh SPELL_FAILED_OTHER. The
+    // proxy was forwarding all of them as 3-packet bundles (SpellFailure + SpellFailedOther
+    // + CancelSpellVisual), and 10+ CancelSpellVisuals in rapid succession chained into a
+    // stuck cast sound on the 1.14.2 client (reported as "imp Firebolt sound stuck").
+    // Forwarding the first one is sufficient — the client cancels the cast bar / visual and
+    // subsequent same-cast failures add no new state.
+    public Dictionary<(WowGuid128 Caster, uint SpellId), long> RecentlyForwardedSpellFailedOther = new();
     public string LeftChannelName = "";
     public bool IsPassingOnLoot;
     public int GroupUpdateCounter;
@@ -315,6 +324,17 @@ public sealed class GameSessionData
     //MIRASU - monotonic sequence used to make non-player CastIDs unique per cast.
     public int OtherCastSequenceCounter;
     public int PlayerChildCastSequence;
+    // JimsProxy: tracks unique CastIDs minted at SMSG_SPELL_START for pet casts that
+    // don't match PendingPetCasts (i.e. pet AUTO-CASTs, not player-initiated presses).
+    // Without this, every auto-cast of a given spell from a given pet shares the same
+    // deterministic CastID (spellId + casterCounter); the 1.14.2 client treats multiple
+    // SPELL_STARTs with the same CastID as updates to one in-flight cast → audio
+    // pipeline overlaps and the cast bar gets stuck (reported as "imp Firebolt sound
+    // stuck"). At SPELL_GO we recall the stored CastID so the START/GO pair shares a
+    // single unique ID. Player-pressed pet casts hit PendingPetCasts and get
+    // overridden with ServerGUID downstream → the auto-cast map entry is a harmless
+    // orphan in that case.
+    public ConcurrentDictionary<(WowGuid128 caster, uint spellId), WowGuid128> PetAutoCastActiveCastIds = new();
     // Tracks last-seen UNIT_CHANNEL_SPELL per unit so we can synthesize
     // SMSG_SPELL_CHANNEL_START/UPDATE for observers (vanilla only sends
     // MSG_CHANNEL_START to the caster, not to nearby players).
@@ -1453,6 +1473,7 @@ public sealed class GameSessionData
         while (PendingPetCasts.TryDequeue(out _)) { }
         int otherCount = OtherCasterActiveCastIds.Count;
         OtherCasterActiveCastIds.Clear();
+        PetAutoCastActiveCastIds.Clear();
         // Single-slot trackers for melee + auto-repeat (Auto Shot, Shoot Wand)
         // — same lifecycle as PendingNormalCasts; if a tracker was set when
         // the DC fired, it never gets cleared by the SPELL_GO/CAST_FAILED
