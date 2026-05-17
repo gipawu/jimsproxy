@@ -1022,6 +1022,52 @@ public partial class WorldClient
 
                     GetSession().GameState.DiagLastObservedPlayerTransportGuid = moveInfo.TransportGuid;
                 }
+
+                // JimsProxy (zep-stuck-low-latency-race 2026-05-17): deferred
+                // transport-clear synth dispatcher. Both arming paths SKIP the
+                // synth when the player's destination UpdateObject confirms
+                // they are legitimately on a transport (zep tower / boat deck /
+                // mid-flight zep). Reasons differ but the action is the same:
+                //
+                //   - NewWorld + on transport: the natural NEW_WORLD load
+                //     already unlocked the client's movement state on map
+                //     load; firing the synth would risk re-wedging.
+                //   - Login + on transport: SMSG_MOVE_TELEPORT with
+                //     TransportGUID=empty would dump the player off the
+                //     transport into mid-air / ocean (validated 2026-05-17,
+                //     log jimsproxy-20260517-102517.jsonl — tester fell into
+                //     ocean at Silithus). MoveTeleport semantics don't allow
+                //     a no-op "state-refresh" with TransportGUID preserved;
+                //     the client treats any MoveTeleport as a real teleport.
+                //     Accept the temporary turn-input gate; the next natural
+                //     world transition (zep docking) releases it.
+                //
+                // Synth fires only when destination is NOT on a transport —
+                // the dc39c39 stale-flag-clear use case (player rode through
+                // a portal mid-zep, or the legacy server's UpdateObject lost
+                // the transport attach by destination). Same payload for
+                // both NewWorld and Login paths in this branch.
+                var pendingMode = GetSession().GameState.PendingDeferredTransportSynth;
+                if (pendingMode != DeferredTransportSynthMode.None)
+                {
+                    GetSession().GameState.PendingDeferredTransportSynth = DeferredTransportSynthMode.None;
+                    bool destinationOnTransport = !moveInfo.TransportGuid.IsEmpty();
+                    if (destinationOnTransport)
+                    {
+                        Framework.Logging.Log.Event("movement.transport_clear.deferred_skipped", new
+                        {
+                            map_id = GetSession().GameState.CurrentMapId,
+                            player_low = guid.GetCounter(),
+                            destination_transport_guid = moveInfo.TransportGuid.ToString(),
+                            mode = pendingMode.ToString(),
+                            reason = "destination_on_transport",
+                        });
+                    }
+                    else
+                    {
+                        FireDeferredTransportClearSynth(guid, moveInfo.Position, moveInfo.Orientation, pendingMode.ToString());
+                    }
+                }
             }
 
             var moveFlags = moveInfo.Flags;

@@ -294,65 +294,21 @@ public partial class WorldClient
 
             SendPacketToClient(teleport);
 
-            // JimsProxy (zep-stuck-no-move 2026-05-14): cross-continent transports
-            // (Grom'gol↔Orgrimmar zep, BB↔Ratchet boat) leave the 1.14 client holding
-            // a stale MOVEMENTFLAG_ONTRANSPORT after NEW_WORLD. Mouse-look continues
-            // to work, but the client suppresses every CMSG_MOVE_START_* because its
-            // local MovementInfo still references the old-map transport GUID, which
-            // no longer exists. Symptom: "can't move after the zeppelin." Synthesize
-            // an SMSG_MOVE_TELEPORT with TransportGUID=default to force the client to
-            // fully reset its local MovementInfo. The client will fire a matching
-            // CMSG_MOVE_TELEPORT_ACK; HandleMoveTeleportAck (server side) drops it by
-            // sentinel MoveCounter so the legacy server never sees the spurious ack.
-            WowGuid128 playerGuid = GetSession().GameState.CurrentPlayerGuid;
-            if (!playerGuid.IsEmpty())
-            {
-                const uint SyntheticTeleportAckSentinel = 0xFFFFFFFFu;
-                MoveTeleport transportClear = new MoveTeleport();
-                transportClear.MoverGUID = playerGuid;
-                transportClear.MoveCounter = SyntheticTeleportAckSentinel;
-                transportClear.Position = teleport.Position;
-                transportClear.Orientation = teleport.Orientation;
-                transportClear.PreloadWorld = 0;
-                transportClear.TransportGUID = default;
-                // Leave transportClear.Vehicle at its default null! sentinel —
-                // assigning null here trips the non-nullable-ref-type check; the
-                // existing MoveTeleport path uses this same pattern for non-vehicle
-                // teleports.
-                GetSession().GameState.PendingSyntheticTransportClearAckCounter =
-                    SyntheticTeleportAckSentinel;
-                Framework.Logging.Log.Event("movement.transport_clear.synthesized", new
-                {
-                    map_id = teleport.MapID,
-                    player_low = playerGuid.GetCounter(),
-                    position = $"{teleport.Position.X:F2},{teleport.Position.Y:F2},{teleport.Position.Z:F2}",
-                });
-                // JimsProxy (zep-stuck-no-move 2026-05-14, belt-and-suspenders):
-                // explicitly wrap the SendPacketToClient call so we know whether
-                // the packet actually reached the socket. If `send_completed`
-                // fires, the call returned without throwing; if `send_failed`
-                // fires, an exception was raised and we can pinpoint the issue.
-                // Resolves the open "synth emitted but no ack" question by ruling
-                // out a silent drop in the proxy's outbound pipeline.
-                try
-                {
-                    SendPacketToClient(transportClear);
-                    Framework.Logging.Log.Event("movement.transport_clear.send_completed", new
-                    {
-                        player_low = playerGuid.GetCounter(),
-                        sentinel_counter = SyntheticTeleportAckSentinel,
-                    });
-                }
-                catch (System.Exception ex)
-                {
-                    Framework.Logging.Log.Event("movement.transport_clear.send_failed", new
-                    {
-                        player_low = playerGuid.GetCounter(),
-                        exception_type = ex.GetType().Name,
-                        exception_message = ex.Message,
-                    });
-                }
-            }
+            // JimsProxy (zep-stuck-low-latency-race 2026-05-17): defer the
+            // transport-clear synth until the player's first post-NEW_WORLD
+            // UpdateObject lands. Firing inline here at NEW_WORLD time worked at
+            // ~150ms latency (synth happened to arrive at the modern client AFTER
+            // the destination COMPRESSED_UPDATE_OBJECT) but raced at ~35ms (synth
+            // arrived BEFORE the destination state, the server's subsequent
+            // player-update re-attached the transport flag, and the rapid
+            // clear→re-attach wedged the modern client into a no-MOVE_START_*
+            // state when the destination position was on a transport — Grom'gol
+            // zep tower platform, Ratchet boat deck). The deferred path in
+            // UpdateHandler.ReadMovementUpdateBlock inspects moveInfo.TransportGuid
+            // and only synths when the destination has the player OFF a transport,
+            // preserving the dc39c39 original use case (cross-continent land
+            // destinations) without breaking the on-transport destinations.
+            GetSession().GameState.PendingDeferredTransportSynth = DeferredTransportSynthMode.NewWorld;
 
             if (teleport.MapID > 1)
             {
@@ -368,6 +324,62 @@ public partial class WorldClient
                 resume.Reason = 1;
                 SendPacketToClient(resume);
             }
+        }
+    }
+
+    // JimsProxy (zep-stuck-low-latency-race 2026-05-17): synthesizes a player-targeted
+    // SMSG_MOVE_TELEPORT with TransportGUID=default to force the modern client to clear
+    // any stale MOVEMENTFLAG_ONTRANSPORT carried across from the source map's transport.
+    // Fired from the deferred path in UpdateHandler.ReadMovementUpdateBlock only when the
+    // destination's player UpdateObject confirms the player is NOT on a transport (zep
+    // tower / boat deck) at the destination. The MoveCounter sentinel is dropped by the
+    // server-side HandleMoveTeleportAck so the legacy server never sees the spurious ack.
+    internal void FireDeferredTransportClearSynth(WowGuid128 playerGuid, Vector3 position, float orientation, string mode)
+    {
+        if (playerGuid.IsEmpty())
+            return;
+
+        const uint SyntheticTeleportAckSentinel = 0xFFFFFFFFu;
+        MoveTeleport transportClear = new MoveTeleport();
+        transportClear.MoverGUID = playerGuid;
+        transportClear.MoveCounter = SyntheticTeleportAckSentinel;
+        transportClear.Position = position;
+        transportClear.Orientation = orientation;
+        transportClear.PreloadWorld = 0;
+        transportClear.TransportGUID = default;
+        // Leave transportClear.Vehicle at its default null! sentinel — assigning
+        // null trips the non-nullable-ref-type check; the existing MoveTeleport
+        // path uses this same pattern for non-vehicle teleports.
+
+        GetSession().GameState.PendingSyntheticTransportClearAckCounter =
+            SyntheticTeleportAckSentinel;
+
+        Framework.Logging.Log.Event("movement.transport_clear.synthesized", new
+        {
+            map_id = GetSession().GameState.CurrentMapId,
+            player_low = playerGuid.GetCounter(),
+            position = $"{position.X:F2},{position.Y:F2},{position.Z:F2}",
+            deferred = true,
+            mode = mode,
+        });
+
+        try
+        {
+            SendPacketToClient(transportClear);
+            Framework.Logging.Log.Event("movement.transport_clear.send_completed", new
+            {
+                player_low = playerGuid.GetCounter(),
+                sentinel_counter = SyntheticTeleportAckSentinel,
+            });
+        }
+        catch (System.Exception ex)
+        {
+            Framework.Logging.Log.Event("movement.transport_clear.send_failed", new
+            {
+                player_low = playerGuid.GetCounter(),
+                exception_type = ex.GetType().Name,
+                exception_message = ex.Message,
+            });
         }
     }
 
