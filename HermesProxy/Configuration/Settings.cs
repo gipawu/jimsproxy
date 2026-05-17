@@ -52,6 +52,11 @@ public static class Settings
     // prefix-gated to "PLPWR" — no other addon traffic is touched. Disable if
     // a future PallyPower protocol bump invalidates the assumption.
     public static bool EnablePallyPowerInterop;
+    // JimsProxy (low-latency-mode): forward every CMSG_CAST_SPELL immediately
+    // without holding. Eliminates hold-queue race conditions that cause stuck
+    // spells and looping sounds for players with <40ms RTT. NOT_READY rejections
+    // are silently suppressed. Most players should leave this OFF.
+    public static bool LowLatencyMode;
 
     public static bool LoadAndVerifyFrom(ConfigurationParser config)
     {
@@ -81,6 +86,7 @@ public static class Settings
         EnableUnplannedReconnect = config.GetBoolean("EnableUnplannedReconnect", false);
         UnplannedReconnectTimeoutMs = Math.Clamp(config.GetInt("UnplannedReconnectTimeoutMs", 5000), 1000, 30000);
         EnablePallyPowerInterop = config.GetBoolean("EnablePallyPowerInterop", true);
+        LowLatencyMode = config.GetBoolean("LowLatencyMode", false);
         Log.StructuredLogEnabled = StructuredLog;
         Log.VerboseLogEnabled = VerboseLog;
         // Open the JSONL file now so session.start's payload can include the full path.

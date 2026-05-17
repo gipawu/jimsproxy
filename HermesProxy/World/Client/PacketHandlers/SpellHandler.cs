@@ -296,6 +296,19 @@ public partial class WorldClient
         if (packet.CanRead())
             arg2 = packet.ReadInt32();
 
+        // JimsProxy (low-latency-mode): silently suppress NOT_READY rejections.
+        // In forward-everything mode, mid-GCD presses go to the server and bounce
+        // back as NOT_READY. Dequeue the entry cleanly and don't tell the client.
+        if (Settings.LowLatencyMode && reason == (uint)SpellCastResultVanilla.NotReady)
+        {
+            GetSession().GameState.TryDequeuePendingNormalCast(spellId, out _);
+            Log.Event("cast.low_latency_not_ready_suppressed", new
+            {
+                spell_id = spellId,
+            });
+            return;
+        }
+
         // JimsProxy HealComm bridge: SMSG_CAST_FAILED targets the local
         // caster directly, so any pending resurrection cast tracked for
         // us is now cancelled — emit HC-1.0 stop so 1.12-native listeners
