@@ -86,10 +86,14 @@ public partial class WorldSocket
         if (toBeSentTextParts.Count < 1)
             return;
 
+        var worldClient = GetSession().WorldClient;
+        if (worldClient == null)
+            return;
+
         if (LegacyVersion.AddedInVersion(ClientVersionBuild.V2_0_1_6180))
-            GetSession().WorldClient!.SendMessageChatWotLK(ChatMessageTypeWotLK.Afk, 0, toBeSentTextParts[0], "", "");
+            worldClient.SendMessageChatWotLK(ChatMessageTypeWotLK.Afk, 0, toBeSentTextParts[0], "", "");
         else
-            GetSession().WorldClient!.SendMessageChatVanilla(ChatMessageTypeVanilla.Afk, 0, toBeSentTextParts[0], "", "");
+            worldClient.SendMessageChatVanilla(ChatMessageTypeVanilla.Afk, 0, toBeSentTextParts[0], "", "");
     }
 
     [PacketHandler(Opcode.CMSG_CHAT_MESSAGE_DND)]
@@ -99,35 +103,47 @@ public partial class WorldSocket
         if (toBeSentTextParts.Count < 1)
             return;
 
+        var worldClient = GetSession().WorldClient;
+        if (worldClient == null)
+            return;
+
         if (LegacyVersion.AddedInVersion(ClientVersionBuild.V2_0_1_6180))
-            GetSession().WorldClient!.SendMessageChatWotLK(ChatMessageTypeWotLK.Dnd, 0, toBeSentTextParts[0], "", "");
+            worldClient.SendMessageChatWotLK(ChatMessageTypeWotLK.Dnd, 0, toBeSentTextParts[0], "", "");
         else
-            GetSession().WorldClient!.SendMessageChatVanilla(ChatMessageTypeVanilla.Dnd, 0, toBeSentTextParts[0], "", "");
+            worldClient.SendMessageChatVanilla(ChatMessageTypeVanilla.Dnd, 0, toBeSentTextParts[0], "", "");
     }
 
     [PacketHandler(Opcode.CMSG_CHAT_MESSAGE_CHANNEL)]
     void HandleChatMessageChannel(ChatMessageChannel channel)
     {
+        var worldClient = GetSession().WorldClient;
+        if (worldClient == null)
+            return;
+
         var toBeSentTextParts = ConvertTextMessageIntoMaxLengthParts(channel.Text);
         foreach (string text in toBeSentTextParts)
         {
             if (LegacyVersion.AddedInVersion(ClientVersionBuild.V2_0_1_6180))
-                GetSession().WorldClient!.SendMessageChatWotLK(ChatMessageTypeWotLK.Channel, channel.Language, text, channel.Target, "");
+                worldClient.SendMessageChatWotLK(ChatMessageTypeWotLK.Channel, channel.Language, text, channel.Target, "");
             else
-                GetSession().WorldClient!.SendMessageChatVanilla(ChatMessageTypeVanilla.Channel, channel.Language, text, channel.Target, "");
+                worldClient.SendMessageChatVanilla(ChatMessageTypeVanilla.Channel, channel.Language, text, channel.Target, "");
         }
     }
 
     [PacketHandler(Opcode.CMSG_CHAT_MESSAGE_WHISPER)]
     void HandleChatMessageWhisper(ChatMessageWhisper whisper)
     {
+        var worldClient = GetSession().WorldClient;
+        if (worldClient == null)
+            return;
+
         var toBeSentTextParts = ConvertTextMessageIntoMaxLengthParts(whisper.Text);
         foreach (string text in toBeSentTextParts)
         {
             if (LegacyVersion.AddedInVersion(ClientVersionBuild.V2_0_1_6180))
-                GetSession().WorldClient!.SendMessageChatWotLK(ChatMessageTypeWotLK.Whisper, whisper.Language, text, "", whisper.Target);
+                worldClient.SendMessageChatWotLK(ChatMessageTypeWotLK.Whisper, whisper.Language, text, "", whisper.Target);
             else
-                GetSession().WorldClient!.SendMessageChatVanilla(ChatMessageTypeVanilla.Whisper, whisper.Language, text, "", whisper.Target);
+                worldClient.SendMessageChatVanilla(ChatMessageTypeVanilla.Whisper, whisper.Language, text, "", whisper.Target);
         }
     }
 
@@ -138,10 +154,14 @@ public partial class WorldSocket
         if (toBeSentTextParts.Count < 1)
             return;
 
+        var worldClient = GetSession().WorldClient;
+        if (worldClient == null)
+            return;
+
         if (LegacyVersion.AddedInVersion(ClientVersionBuild.V2_0_1_6180))
-            GetSession().WorldClient!.SendMessageChatWotLK(ChatMessageTypeWotLK.Emote, 0, toBeSentTextParts[0], "", "");
+            worldClient.SendMessageChatWotLK(ChatMessageTypeWotLK.Emote, 0, toBeSentTextParts[0], "", "");
         else
-            GetSession().WorldClient!.SendMessageChatVanilla(ChatMessageTypeVanilla.Emote, 0, toBeSentTextParts[0], "", "");
+            worldClient.SendMessageChatVanilla(ChatMessageTypeVanilla.Emote, 0, toBeSentTextParts[0], "", "");
     }
 
     [PacketHandler(Opcode.CMSG_CHAT_MESSAGE_GUILD)]
@@ -213,18 +233,22 @@ public partial class WorldSocket
                 return;
         }
 
+        var worldClient = GetSession().WorldClient;
+        if (worldClient == null)
+            return;
+
         var toBeSentTextParts = ConvertTextMessageIntoMaxLengthParts(chatText);
         foreach (string text in toBeSentTextParts)
         {
             if (LegacyVersion.AddedInVersion(ClientVersionBuild.V2_0_1_6180))
             {
                 ChatMessageTypeWotLK chatMsg = type.CastEnum<ChatMessageTypeWotLK>();
-                GetSession().WorldClient!.SendMessageChatWotLK(chatMsg, packet.Language, text, "", "");
+                worldClient.SendMessageChatWotLK(chatMsg, packet.Language, text, "", "");
             }
             else
             {
                 ChatMessageTypeVanilla chatMsg = type.CastEnum<ChatMessageTypeVanilla>();
-                GetSession().WorldClient!.SendMessageChatVanilla(chatMsg, packet.Language, text, "", "");
+                worldClient.SendMessageChatVanilla(chatMsg, packet.Language, text, "", "");
             }
         }
     }
@@ -253,15 +277,19 @@ public partial class WorldSocket
         if (string.IsNullOrEmpty(body)) return;
         string text = prefix + '\t' + body;
 
+        var worldClient = GetSession().WorldClient;
+        if (worldClient == null)
+            return;
+
         if (LegacyVersion.AddedInVersion(ClientVersionBuild.V2_0_1_6180))
         {
             ChatMessageTypeWotLK chatMsg = packet.Params.Type.CastEnum<ChatMessageTypeWotLK>();
-            GetSession().WorldClient!.SendMessageChatWotLK(chatMsg, language, text, "", "");
+            worldClient.SendMessageChatWotLK(chatMsg, language, text, "", "");
         }
         else
         {
             ChatMessageTypeVanilla chatMsg = packet.Params.Type.CastEnum<ChatMessageTypeVanilla>();
-            GetSession().WorldClient!.SendMessageChatVanilla(chatMsg, language, text, "", "");
+            worldClient.SendMessageChatVanilla(chatMsg, language, text, "", "");
         }
     }
 
@@ -288,15 +316,19 @@ public partial class WorldSocket
         string channelName = packet.ChannelGuid.IsEmpty() ? "" :
             GetSession().GameState.GetChannelName((int)packet.ChannelGuid.GetCounter());
 
+        var worldClient = GetSession().WorldClient;
+        if (worldClient == null)
+            return;
+
         if (LegacyVersion.AddedInVersion(ClientVersionBuild.V2_0_1_6180))
         {
             ChatMessageTypeWotLK chatMsg = packet.Params.Type.CastEnum<ChatMessageTypeWotLK>();
-            GetSession().WorldClient!.SendMessageChatWotLK(chatMsg, language, text, channelName, packet.Target);
+            worldClient.SendMessageChatWotLK(chatMsg, language, text, channelName, packet.Target);
         }
         else
         {
             ChatMessageTypeVanilla chatMsg = packet.Params.Type.CastEnum<ChatMessageTypeVanilla>();
-            GetSession().WorldClient!.SendMessageChatVanilla(chatMsg, language, text, channelName, packet.Target);
+            worldClient.SendMessageChatVanilla(chatMsg, language, text, channelName, packet.Target);
         }
     }
 
