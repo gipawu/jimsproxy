@@ -593,6 +593,28 @@ public partial class WorldClient
         if (LegacyVersion.AddedInVersion(ClientVersionBuild.V3_0_2_9056))
             reason = (byte)LegacyVersion.ConvertSpellCastResult(packet.ReadUInt8());
 
+        // JimsProxy: dedup the auto-cast retry storm. Kronos pet auto-cast fires
+        // SMSG_SPELL_FAILED_OTHER 5+/sec while a target is out of range / dying;
+        // forwarding each one chains CancelSpellVisuals into a stuck cast sound on
+        // the 1.14.2 client. The first failure carries all the state the client
+        // needs; subsequent same-(caster, spell) failures within 500ms add nothing.
+        const long DedupWindowMs = 500;
+        long nowMs = Time.GetMSTime();
+        var dedupKey = (casterUnit, spellId);
+        if (GetSession().GameState.RecentlyForwardedSpellFailedOther.TryGetValue(dedupKey, out var lastMs) &&
+            nowMs - lastMs < DedupWindowMs)
+        {
+            Log.Event("spell.failed_other.dedup_skipped", new
+            {
+                spellId,
+                reason,
+                casterCounter = casterUnit.GetCounter(),
+                ms_since_last = nowMs - lastMs,
+            });
+            return;
+        }
+        GetSession().GameState.RecentlyForwardedSpellFailedOther[dedupKey] = nowMs;
+
         WowGuid128 castId;
         uint spellVisual;
         // Try to find pending cast info (peek, don't remove - this is informational).
@@ -622,6 +644,15 @@ public partial class WorldClient
             var activeKey = (casterUnit, spellId);
             if (GetSession().GameState.OtherCasterActiveCastIds.TryRemove(activeKey, out var trackedCastId))
                 castId = trackedCastId;
+            // JimsProxy: pet AUTO-CAST failure — pull the unique CastID stored at
+            // SPELL_START in PetAutoCastActiveCastIds. Without this lookup, the
+            // synthesized CancelSpellVisual below targets the deterministic seed
+            // (spellId + casterCounter) instead of the in-flight cast, the 1.14.2
+            // client doesn't recognize the dismiss, and Firebolt sound loops when
+            // the target dies mid-cast.
+            else if (GetSession().GameState.CurrentPetGuid == casterUnit &&
+                     GetSession().GameState.PetAutoCastActiveCastIds.TryRemove(activeKey, out var petCastId))
+                castId = petCastId;
             else
                 castId = WowGuid128.Create(HighGuidType703.Cast, SpellCastSource.Normal, (uint)GetSession().GameState.CurrentMapId!, spellId, spellId + casterUnit.GetCounter());
             spellVisual = GameData.GetSpellVisual(spellId);
@@ -927,6 +958,15 @@ public partial class WorldClient
             foundActiveCastId = GetSession().GameState.OtherCasterActiveCastIds.TryRemove(activeKey, out var trackedCastId);
             if (foundActiveCastId)
                 castId = trackedCastId;
+            // JimsProxy: pet AUTO-CAST failure path — same rationale as
+            // HandleSpellFailedOther. Without this lookup the synthesized dismiss
+            // packets target the deterministic seed and the client ignores them.
+            else if (GetSession().GameState.CurrentPetGuid == casterUnit &&
+                     GetSession().GameState.PetAutoCastActiveCastIds.TryRemove(activeKey, out var petCastId))
+            {
+                castId = petCastId;
+                foundActiveCastId = true;
+            }
             else
                 castId = WowGuid128.Create(HighGuidType703.Cast, SpellCastSource.Normal, (uint)GetSession().GameState.CurrentMapId!, spellId, spellId + casterUnit.GetCounter());
             spellVisual = GameData.GetSpellVisual(spellId);
@@ -1662,18 +1702,49 @@ public partial class WorldClient
         }
         else
         {
+            // JimsProxy: pet AUTO-CASTs (Imp Firebolt auto-fire etc.) have no
+            // PendingPetCast entry, so the downstream ServerGUID override in
+            // HandleSpellStart / HandleSpellGo misses them. Using a deterministic
+            // seed (spellId + casterCounter) means every auto-cast of the same
+            // spell from the same pet shares the SAME CastID — the 1.14.2 client
+            // treats this as updates to one in-flight cast and the audio pipeline
+            // overlaps into a stuck cast sound. Mint a unique CastID at SPELL_START
+            // and store it in PetAutoCastActiveCastIds so the matching SPELL_GO
+            // can recall it; START/GO of one cast share one ID, distinct casts
+            // get distinct IDs. Player-pressed pet casts still get overridden
+            // with ServerGUID downstream, so the stored entry is a harmless
+            // orphan in that case.
+            var petKey = (dbdata.CasterUnit, (uint)dbdata.SpellID);
             if (isSpellGo)
             {
-                // Player/pet SPELL_GO: unique CastID per packet. Channeled tick spells
-                // (Arcane Missiles 7269) don't match PendingNormalCasts — without unique
-                // IDs every tick shares the same CastID and the client drops a missile.
-                // For casts that DO match, HandleSpellGo overwrites with ServerGUID anyway.
+                if (casterIsPet && gameState.PetAutoCastActiveCastIds.TryRemove(petKey, out var startedCastId))
+                {
+                    // Pair this GO with the unique ID minted at the matching SPELL_START.
+                    dbdata.CastID = startedCastId;
+                }
+                else
+                {
+                    // Player/pet SPELL_GO: unique CastID per packet. Channeled tick spells
+                    // (Arcane Missiles 7269) don't match PendingNormalCasts — without unique
+                    // IDs every tick shares the same CastID and the client drops a missile.
+                    // For casts that DO match, HandleSpellGo overwrites with ServerGUID anyway.
+                    uint seq = (uint)Interlocked.Increment(ref gameState.PlayerChildCastSequence);
+                    dbdata.CastID = WowGuid128.Create(HighGuidType703.Cast, SpellCastSource.Normal, (uint)gameState.CurrentMapId!, (uint)dbdata.SpellID, ((ulong)seq << 32) | (uint)((uint)dbdata.SpellID + dbdata.CasterUnit.GetCounter()));
+                }
+            }
+            else if (casterIsPet)
+            {
+                // Pet SPELL_START: unique CastID, stored for the matching SPELL_GO.
                 uint seq = (uint)Interlocked.Increment(ref gameState.PlayerChildCastSequence);
-                dbdata.CastID = WowGuid128.Create(HighGuidType703.Cast, SpellCastSource.Normal, (uint)gameState.CurrentMapId!, (uint)dbdata.SpellID, ((ulong)seq << 32) | (uint)((uint)dbdata.SpellID + dbdata.CasterUnit.GetCounter()));
+                var uniqueCastId = WowGuid128.Create(HighGuidType703.Cast, SpellCastSource.Normal, (uint)gameState.CurrentMapId!, (uint)dbdata.SpellID, ((ulong)seq << 32) | (uint)((uint)dbdata.SpellID + dbdata.CasterUnit.GetCounter()));
+                dbdata.CastID = uniqueCastId;
+                gameState.PetAutoCastActiveCastIds[petKey] = uniqueCastId;
             }
             else
             {
-                // Player/pet SPELL_START: deterministic seed, overridden by ServerGUID on GO.
+                // Player SPELL_START: deterministic seed, overridden by ServerGUID on GO
+                // via PendingNormalCasts dequeue. Player CMSG_CAST_SPELL always
+                // populates PendingNormalCasts so the override always fires.
                 dbdata.CastID = WowGuid128.Create(HighGuidType703.Cast, SpellCastSource.Normal, (uint)gameState.CurrentMapId!, (uint)dbdata.SpellID, (ulong)dbdata.SpellID + dbdata.CasterUnit.GetCounter());
             }
         }
