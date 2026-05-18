@@ -168,6 +168,14 @@ public partial class WorldClient
         trainer.TrainerID = trainer.TrainerGUID.GetEntry();
         trainer.TrainerType = packet.ReadInt32();
         int count = packet.ReadInt32();
+        int filteredKnown = 0;
+        // JimsProxy: reset the authoritative-Known set for this fresh trainer
+        // list, then repopulate as we walk the entries. The intercept in
+        // HandleTrainerBuySpell consults this set to catch stale UI clicks for
+        // spells that the server considers Known via supersede chain (and so
+        // are absent from CurrentPlayerKnownSpells).
+        var lastKnownSet = GetSession().GameState.LastTrainerListKnownSpells;
+        lastKnownSet.Clear();
         for (int i = 0; i < count; ++i)
         {
             TrainerListSpell spell = new();
@@ -197,7 +205,44 @@ public partial class WorldClient
             spell.ReqAbility[0] = packet.ReadUInt32();
             spell.ReqAbility[1] = packet.ReadUInt32();
             spell.ReqAbility[2] = packet.ReadUInt32();
+            // JimsProxy: filter already-learned spells out of the trainer list
+            // before forwarding to the modern client. Empirically the modern
+            // Classic 1.14 trainer UI does not visually differentiate Known from
+            // Available based on the state byte — both render as a clickable
+            // green row with an enabled Train button. Clicking a Known spell
+            // sends CMSG_TRAINER_BUY_SPELL, the server replies with FAILED
+            // (Reason 2), and the player sees an unhelpful "Failed to learn"
+            // chat message for a spell they already have. Filtering server-side
+            // keeps the trainer UI clean and matches user expectation that
+            // learned spells "drop off" the list (the original UX complaint
+            // that motivated the trainer-list-refresh work).
+            // Note: we still call StoreRealSpell + read all packet fields above
+            // so the mapping stays available if the spell is bought via any
+            // other code path, and so the reader cursor stays aligned with the
+            // legacy packet body regardless of filtering.
+            if (stateOld == TrainerSpellStateLegacy.Known)
+            {
+                // Normalize to the real spell id regardless of whether the version
+                // condition above replaced `spellId` (modern→legacy across expansion
+                // boundary) or left it as the legacy learn-wrapper (1.14→1.12, both
+                // expansion 1). The intercept in HandleTrainerBuySpell looks up the
+                // real id via GameData.GetRealSpell, so storing the real id here
+                // makes Contains() match in both versioning regimes.
+                lastKnownSet.Add(GameData.GetRealSpell(spellId));
+                filteredKnown++;
+                continue;
+            }
             trainer.Spells.Add(spell);
+        }
+        if (filteredKnown > 0)
+        {
+            Log.Event("spell.trainer_list.known_filtered", new
+            {
+                trainer_id = trainer.TrainerID,
+                listed = trainer.Spells.Count,
+                filtered_known = filteredKnown,
+                total_received = count,
+            });
         }
         trainer.Greeting = packet.ReadCString();
         SendPacketToClient(trainer);
@@ -241,6 +286,14 @@ public partial class WorldClient
 
         // Ban defense: server explicitly rejected the buy, so the predecessor
         // was NOT removed server-side. Restore it to keep proxy state in sync.
+        // Also clear in-flight tracking so a legitimate retry (e.g., player
+        // came back with more money) isn't dropped as a stale duplicate.
+        if (GetSession().GameState.InFlightTrainerBuySpellId != 0)
+        {
+            GetSession().GameState.InFlightTrainerBuySpellId = 0u;
+            GetSession().GameState.InFlightTrainerBuyTickMs = 0;
+        }
+
         uint pendingSpellId = GetSession().GameState.PendingTrainerBuySpellId;
         uint removedPredecessor = GetSession().GameState.PendingTrainerBuyRemovedPredecessor;
         if (pendingSpellId != 0 && removedPredecessor != 0)

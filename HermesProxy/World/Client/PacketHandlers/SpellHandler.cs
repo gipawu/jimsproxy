@@ -140,6 +140,14 @@ public partial class WorldClient
             GetSession().GameState.PendingTrainerBuySpellId = 0u;
             GetSession().GameState.PendingTrainerBuyRemovedPredecessor = 0u;
         }
+        // Clear in-flight trainer-buy on rank-upgrade response too — match on either
+        // the new or the superseded id so we don't strand stale in-flight state.
+        if (GetSession().GameState.InFlightTrainerBuySpellId == spellId
+            || GetSession().GameState.InFlightTrainerBuySpellId == supercededId)
+        {
+            GetSession().GameState.InFlightTrainerBuySpellId = 0u;
+            GetSession().GameState.InFlightTrainerBuyTickMs = 0;
+        }
         SendPacketToClient(spells);
         ReconcileTalentRankInjection();
     }
@@ -159,6 +167,13 @@ public partial class WorldClient
         {
             GetSession().GameState.PendingTrainerBuySpellId = 0u;
             GetSession().GameState.PendingTrainerBuyRemovedPredecessor = 0u;
+        }
+        // Clear in-flight trainer-buy on confirmed learn so the next CMSG
+        // for the same spell isn't dropped as a stale duplicate.
+        if (GetSession().GameState.InFlightTrainerBuySpellId == spellId)
+        {
+            GetSession().GameState.InFlightTrainerBuySpellId = 0u;
+            GetSession().GameState.InFlightTrainerBuyTickMs = 0;
         }
         SendPacketToClient(spells);
         ReconcileTalentRankInjection();
