@@ -376,6 +376,12 @@ local function PlayerCanUse(itemClassId, itemSubClassId)
     local _, classFile = UnitClass("player")
 
     if itemClassId == ITEM_CLASS_ARMOR then
+        -- Subclass 0 (Miscellaneous) — shirts, tabards, cloaks, necklaces,
+        -- rings, trinkets. None require any proficiency / training; any class
+        -- can equip them. Must short-circuit before the trainedArmorSubs
+        -- check (which would return false since these aren't in any class's
+        -- skill book).
+        if itemSubClassId == 0 then return true end
         -- Relic types: paladin librams, druid idols, shaman totems. These
         -- aren't trained — they're hard class-locked.
         if itemSubClassId == ARMOR_SUB.LIBRAM then return classFile == "PALADIN" end
