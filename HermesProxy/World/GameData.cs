@@ -3992,19 +3992,43 @@ public static partial class GameData
         (99320u, 9421),
     };
 
-    // Mage mana gems: vanilla "Restore Mana" spell IDs were reshuffled in the
-    // modern client. Vanilla 10053/10054 ("Restore Mana" R3/R4) became "Conjure
-    // Mana Citrine/Ruby" in 1.14; the modern equivalents are 10057/10058.
-    // PR #196's slot-mismatch hotfix overwrites the client's retail ItemEffect
-    // records with the vanilla SpellID, which the client resolves as a conjure
-    // spell → Use: line vanishes and the item becomes inert. Excluding these
-    // items leaves the client's cached retail records untouched.
+    // Mage mana gems: subject to a *narrowed* slot-mismatch skip — see the call site
+    // in GenerateItemEffectUpdateIfNeeded. On servers that already serve the modern
+    // spell id (e.g. Twinstar's Citrine has spellid_1=10057), the slot-relocation
+    // hotfix is safe and necessary; only the case where the server's spell id has
+    // no matching CSV record (vanilla 10053/10054 → would create a record bound to
+    // a legacy id the modern client can't resolve) is skipped.
     //
     // Agate (5514) and Jade (5513) have CSV records (97663/97664).
-    // Citrine (8007) and Ruby (8008) have modern DB2 records (98334/98355)
-    // with spells 10057/10058 that the hotfix would overwrite with the wrong
-    // vanilla IDs (10053/10054).
+    // Citrine (8007) and Ruby (8008) have modern DB2 records (98334/98355).
     internal static readonly HashSet<uint> ManaGemItemEntries = new() { 5513u, 5514u, 8007u, 8008u };
+
+    // Items where PR #196's slot-mismatch ItemEffect hotfix breaks the modern
+    // client's "Use:" tooltip + on-use action, because the vanilla SpellID
+    // doesn't exist in the modern Classic Era SpellDB. The hotfix relocates
+    // the slot-1 retail record to slot 0, dragging the modern spell id (which
+    // the client can't resolve) with it. Skipping these entries leaves the
+    // client's cached retail ItemEffect untouched, restoring the pre-#196
+    // working behaviour where right-click consume goes to the legacy server
+    // for handling.
+    //
+    //   Warlock Spellstone — base rank (5522) has both a slot-0 vanilla record
+    //   (97949) and a slot-1 retail record (97950) carrying spell 32793, a
+    //   modern-only id that strips the "Use:" line when relocated. Greater /
+    //   Major (13456 / 13457) only have slot-0 records so they shouldn't hit
+    //   this path, but listing them defensively guards against server data
+    //   variance.
+    //
+    //   Orb of Soran'ruk — item has 3 CSV records (97771 OnEquip Shadow
+    //   Resistance, 97772 OnEquip spell damage, 97773 OnUse spell 18956).
+    //   Excluding it leaves the client's cached retail record intact.
+    internal static readonly HashSet<uint> ItemEffectSlotMismatchExclusions = new()
+    {
+        // Warlock spellstones
+        5522u, 13456u, 13457u,
+        // Orb of Soran'ruk
+        6898u,
+    };
 
     public static List<Server.Packets.HotFixMessage> PushKnownItemEffectFixes()
     {
@@ -4043,14 +4067,33 @@ public static partial class GameData
 
     public static Server.Packets.HotFixMessage? GenerateItemEffectUpdateIfNeeded(ItemTemplate item, byte slot)
     {
-        // Mana gems: leave the client's cached retail ItemEffect record untouched. Any
-        // mutation pushed via hotfix binds the record to a vanilla "Restore Mana" spell
-        // id the modern client's SpellDB doesn't know, stripping the Use: line. See
-        // ManaGemItemEntries above for the full rationale.
-        if (ManaGemItemEntries.Contains(item.Entry))
+        ItemEffect? effect = GetItemEffectByItemId(item.Entry, slot);
+
+        // Warlock spellstones + Orb of Soran'ruk: blanket skip — the modern client's
+        // retail ItemEffect record carries an id the SpellDB can't resolve once
+        // relocated. See ItemEffectSlotMismatchExclusions above for details.
+        if (ItemEffectSlotMismatchExclusions.Contains(item.Entry))
             return null;
 
-        ItemEffect? effect = GetItemEffectByItemId(item.Entry, slot);
+        // Mana gems: only skip mutation when the legacy server's spell id for this slot
+        // doesn't match any CSV record we have for the item — i.e., the path below
+        // would either rewrite an existing record's SpellID (effect != null branch) or
+        // create a fresh ItemEffect bound to a legacy SpellID the modern client's
+        // SpellDB can't resolve (new-record branch). In both cases the Use: line is
+        // stripped because 10053/10054 mean "Conjure Citrine/Ruby" in the modern client.
+        //
+        // When the server already serves the modern id (e.g. Twinstar's Citrine has
+        // spellid_1=10057), the slot-relocation path is safe and necessary: it preserves
+        // SpellID and only moves LegacySlotIndex so the client's DB2 record (slot 1)
+        // lines up with the server's placement (slot 0). Skipping it here leaves the
+        // record at LegacySlotIndex=1, the client doesn't find an effect at slot 0
+        // (where the server says the on-use lives), and the Use: line vanishes.
+        if (ManaGemItemEntries.Contains(item.Entry) &&
+            item.TriggeredSpellIds[slot] > 0 &&
+            (effect == null || effect.SpellID != item.TriggeredSpellIds[slot]) &&
+            FindItemEffectBySpellId(item.Entry, item.TriggeredSpellIds[slot], slot) == null)
+            return null;
+
         if (effect != null)
         {
             // Relocated CSV records: leave alone on subsequent queries as long as the
