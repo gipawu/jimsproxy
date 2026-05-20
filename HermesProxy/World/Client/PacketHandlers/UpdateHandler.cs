@@ -4369,11 +4369,12 @@ public partial class WorldClient
                 int modelIdForRatio = displayId > 0
                     ? (int)GameData.GetDisplayInfo((uint)displayId).ModelId
                     : 0;
+                float mRatio = 1f;
                 bool modelRatioApplied = modelIdForRatio > 0
                                          && vanillaCmsK.HasValue
-                                         && M2NativeRatio.TryGetValue(modelIdForRatio, out var mRatio);
+                                         && M2NativeRatio.TryGetValue(modelIdForRatio, out mRatio);
                 float k = modelRatioApplied
-                    ? vanillaCmsK!.Value * M2NativeRatio[modelIdForRatio]
+                    ? vanillaCmsK!.Value * mRatio
                     : (vanillaCmsK ?? familyTableK ?? (isWarlockPet ? K_warlock : K_hunter));
 
                 // First-sight race: if CreatureTemplate isn't cached yet (creature

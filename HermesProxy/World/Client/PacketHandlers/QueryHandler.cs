@@ -464,11 +464,12 @@ public partial class WorldClient
             int modelIdForRatio = p.DisplayId > 0
                 ? (int)GameData.GetDisplayInfo(p.DisplayId).ModelId
                 : 0;
+            float mRatio = 1f;
             bool modelRatioApplied = modelIdForRatio > 0
                                      && vanillaCmsK.HasValue
-                                     && WorldClient.M2NativeRatio.TryGetValue(modelIdForRatio, out var mRatio);
+                                     && WorldClient.M2NativeRatio.TryGetValue(modelIdForRatio, out mRatio);
             float k = modelRatioApplied
-                ? vanillaCmsK!.Value * WorldClient.M2NativeRatio[modelIdForRatio]
+                ? vanillaCmsK!.Value * mRatio
                 : (vanillaCmsK ?? familyTableK ?? (p.IsWarlockPet ? 0.75f : 1.5f));
 
             float emit = (p.Cms > 0)
