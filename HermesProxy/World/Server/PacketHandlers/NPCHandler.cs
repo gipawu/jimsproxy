@@ -52,17 +52,45 @@ public partial class WorldSocket
     [PacketHandler(Opcode.CMSG_TRAINER_BUY_SPELL)]
     void HandleTrainerBuySpell(TrainerBuySpell buy)
     {
+        uint realSpellId = GameData.GetRealSpell(buy.SpellID);
+
         WorldPacket packet = new WorldPacket(Opcode.CMSG_TRAINER_BUY_SPELL);
         packet.WriteGuid(buy.TrainerGUID.To64());
         if (ModernVersion.ExpansionVersion > 1 &&
             LegacyVersion.ExpansionVersion <= 1)
         {
-            // in vanilla the server sends learn spell with effect 36
-            // in expansions the server sends the actual spell
             buy.SpellID = GetSession().GameState.GetLearnSpellFromRealSpell(buy.SpellID);
         }
         packet.WriteUInt32(buy.SpellID);
         SendPacketToServer(packet);
+
+        // Ban defense: speculatively remove predecessor rank from known spells.
+        // Kronos calls RemoveSpell(prev) unconditionally but gates the
+        // SMSG_SUPERCEDED_SPELL notification on IsInWorld(). When that gate is
+        // briefly false, the predecessor disappears server-side without telling
+        // us. Without this mirror, the cast-block guard lets through a cast of
+        // the now-unlearned predecessor → autoban.
+        // Restored on explicit SMSG_TRAINER_BUY_FAILED (see Client/NPCHandler).
+        if (LegacyVersion.ExpansionVersion <= 1 &&
+            GameData.SpellRankPredecessor.TryGetValue(realSpellId, out uint predecessor) &&
+            predecessor != 0)
+        {
+            var known = GetSession().GameState.CurrentPlayerKnownSpells;
+            bool removed = known.Remove(predecessor);
+            GetSession().GameState.PendingTrainerBuySpellId = realSpellId;
+            GetSession().GameState.PendingTrainerBuyRemovedPredecessor = removed ? predecessor : 0u;
+            Log.Event("spell.trainer_buy.predecessor_speculatively_removed", new
+            {
+                real_spell_id = realSpellId,
+                predecessor_spell_id = predecessor,
+                was_in_known_set = removed,
+            });
+        }
+        else
+        {
+            GetSession().GameState.PendingTrainerBuySpellId = 0u;
+            GetSession().GameState.PendingTrainerBuyRemovedPredecessor = 0u;
+        }
     }
 
     [PacketHandler(Opcode.CMSG_CONFIRM_RESPEC_WIPE)]

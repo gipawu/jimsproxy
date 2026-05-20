@@ -215,6 +215,19 @@ public sealed class GameSessionData
     //MIRASU   TalentRankPredecessors table and tracks the synthesized set here so the
     //MIRASU   reconcile step can withdraw them on respec.
     public System.Collections.Generic.HashSet<uint> SynthesizedTalentRanks = new();
+    // JimsProxy (Kronos IsInWorld race defense): tracks the last CMSG_TRAINER_BUY_SPELL
+    // we forwarded so we can restore the speculatively-removed predecessor if the buy
+    // fails. Kronos's RemoveSpell(prev) runs unconditionally on trainer-buy, but the
+    // SMSG_SUPERCEDED_SPELL send is gated on m_session->IsInWorld() — when that gate
+    // is briefly false, the predecessor disappears server-side without notification,
+    // and the next CMSG_CAST_SPELL for it triggers an anticheat autoban
+    // (see project_kronos_trainer_buy_predecessor_removal_bug). We mirror the removal
+    // proxy-side on send so the existing cast-block-unknown-spells guard at
+    // World/Server/PacketHandlers/SpellHandler.cs:159 catches the post-buy cast attempt
+    // and converts it into a SMSG_CAST_FAILED (you don't have this spell) instead of
+    // a real ban. On explicit SMSG_TRAINER_BUY_FAILED we restore the predecessor.
+    public uint PendingTrainerBuySpellId;
+    public uint PendingTrainerBuyRemovedPredecessor;
     // JimsProxy: per-unit HP cache used to compute overhealing on legacy servers
     // that don't include OverHeal in SMSG_SPELL_HEAL_LOG (1.12 vanilla). Authoritative
     // source is UNIT_FIELD_HEALTH / UNIT_FIELD_MAXHEALTH from SMSG_UPDATE_OBJECT;
