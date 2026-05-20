@@ -2039,6 +2039,7 @@ public class GlobalSessionData
     // the same WorldClient and needs it alive until the user picks a char.
     // Cleared after the recreate succeeds.
     public volatile bool WorldClientNeedsRecreateOnNextLogin;
+    public volatile bool IsInCharacterSelect;
     public SniffFile ModernSniff = null!;
 
     public Dictionary<string, WowGuid128> GuildsByName = [];

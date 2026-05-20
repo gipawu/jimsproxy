@@ -262,6 +262,7 @@ public partial class WorldSocket
             }
             GetSession().WorldClientNeedsRecreateOnNextLogin = false;
         }
+        GetSession().IsInCharacterSelect = false;
 
         if (!GetSession().GameState.CachedPlayers.TryGetValue(playerLogin.Guid, out var selectedChar))
         {
