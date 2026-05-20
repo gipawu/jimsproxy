@@ -434,6 +434,7 @@ public partial class WorldClient
         // 20260505-130649 reproduced exactly that regression. The flag is
         // cleared in WorldSocket.HandlePlayerLogin after the recreate.
         GetSession().WorldClientNeedsRecreateOnNextLogin = true;
+        GetSession().IsInCharacterSelect = true;
         Log.Event("session.logout_complete.worldclient_recreate_marked", new
         {
             had_world_client = GetSession().WorldClient != null,

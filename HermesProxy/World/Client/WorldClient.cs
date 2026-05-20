@@ -485,6 +485,11 @@ public partial class WorldClient
             // block these packets until connected to instance
             while (GetSession().InstanceSocket == null)
             {
+                if (GetSession().IsInCharacterSelect)
+                {
+                    Log.PrintNet(LogType.Debug, LogNetDir.P2C, $"Dropping {packet.GetUniversalOpcode()} — session is at character select.");
+                    return;
+                }
                 Log.PrintNet(LogType.Network, LogNetDir.P2C, $"Waiting to send {packet.GetUniversalOpcode()} ({packet.GetOpcode()}).");
                 System.Threading.Thread.Sleep(200);
             }
