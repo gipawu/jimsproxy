@@ -3030,12 +3030,22 @@ public partial class WorldClient
                     if (updateMaskArray[itemIdIndex] || updateMaskArray[permEnchantIndex] || updateMaskArray[tempEnchantIndex])
                     {
                         int itemId = updates.ContainsKey(itemIdIndex) ? updates[itemIdIndex].Int32Value : 0;
-                        // Temporary enchants (shaman imbues, poisons) take visual priority over permanent
+                        // Permanent enchants take visual priority over temporary — matches
+                        // 1.12 native client behavior (parity-confirmed: Crusader / Fiery /
+                        // Lifestealing / etc. wins over an applied poison or shaman imbue
+                        // on the same weapon). PR #22 originally inverted this to surface
+                        // shaman imbues / rogue poisons after the proxy was only reading
+                        // the perm slot, but over-corrected — perm visuals now disappeared
+                        // whenever a poison was on the same weapon. The fallback chain
+                        // still picks up the temp visual when perm has no glow (e.g.
+                        // +stat enchants like Crusader's lower-tier replacements, or no
+                        // perm at all), so shaman/rogue users without a glowy perm still
+                        // see their imbue/poison visual.
                         ushort itemVisual = 0;
-                        if (updates.ContainsKey(tempEnchantIndex))
-                            itemVisual = (ushort)GameData.GetItemEnchantVisual(updates[tempEnchantIndex].UInt32Value);
-                        if (itemVisual == 0 && updates.ContainsKey(permEnchantIndex))
+                        if (updates.ContainsKey(permEnchantIndex))
                             itemVisual = (ushort)GameData.GetItemEnchantVisual(updates[permEnchantIndex].UInt32Value);
+                        if (itemVisual == 0 && updates.ContainsKey(tempEnchantIndex))
+                            itemVisual = (ushort)GameData.GetItemEnchantVisual(updates[tempEnchantIndex].UInt32Value);
 
                         // Cache permanent enchant for inspect display
                         if (updates.ContainsKey(permEnchantIndex))
