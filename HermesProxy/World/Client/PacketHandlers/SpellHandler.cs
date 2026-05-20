@@ -133,6 +133,13 @@ public partial class WorldClient
         var knownSpellsSuperseded = GetSession().GameState.CurrentPlayerKnownSpells;
         knownSpellsSuperseded.Remove(supercededId);
         knownSpellsSuperseded.Add(spellId);
+        // Ban defense: clear pending state on rank-upgrade confirmation.
+        if (GetSession().GameState.PendingTrainerBuySpellId == spellId
+            || GetSession().GameState.PendingTrainerBuySpellId == supercededId)
+        {
+            GetSession().GameState.PendingTrainerBuySpellId = 0u;
+            GetSession().GameState.PendingTrainerBuyRemovedPredecessor = 0u;
+        }
         SendPacketToClient(spells);
         ReconcileTalentRankInjection();
     }
