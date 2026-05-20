@@ -146,6 +146,13 @@ public partial class WorldClient
         // JimsProxy (cast-block-unknown-spells): track newly-learned spells so the
         // outbound CMSG_CAST_SPELL guard doesn't false-positive on trainer/talent grants.
         GetSession().GameState.CurrentPlayerKnownSpells.Add(spellId);
+        // Ban defense: clear pending state on confirmed learn — predecessor
+        // stays removed (server actually removed it, proxy state now matches).
+        if (GetSession().GameState.PendingTrainerBuySpellId == spellId)
+        {
+            GetSession().GameState.PendingTrainerBuySpellId = 0u;
+            GetSession().GameState.PendingTrainerBuyRemovedPredecessor = 0u;
+        }
         SendPacketToClient(spells);
         ReconcileTalentRankInjection();
     }

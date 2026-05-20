@@ -516,3 +516,6 @@ debug.*
 # Build script output
 build/
 build-test/
+
+# JimsAH addon — developed locally, not part of the proxy repo
+Addons/JimsAH/

@@ -203,6 +203,31 @@ public partial class WorldClient
         SendPacketToClient(trainer);
     }
 
+    // JimsProxy: refresh the trainer list after a successful buy so the modern
+    // client's trainer UI marks the freshly-learned spell as already-known.
+    // Vanilla 1.12 server sends SMSG_TRAINER_BUY_SUCCEEDED { trainerGuid, spellId }
+    // but the modern 1.14 client has no equivalent opcode and won't update its
+    // trainer frame from SMSG_LEARNED_SPELL alone — the frame is populated from
+    // SMSG_TRAINER_LIST and only re-renders when a new list arrives. Without this
+    // re-request, the just-learned spell stays in the list and the player can
+    // click it again (server returns SMSG_TRAINER_BUY_FAILED, repeat ad nauseam —
+    // observed pattern: 9 FAILEDs in 1.7 sec from a rage-clicked spam). Mirrors
+    // the same refresh pattern the AuctionHandler uses after auction operations.
+    [PacketHandler(Opcode.SMSG_TRAINER_BUY_SUCCEEDED)]
+    void HandleTrainerBuySucceeded(WorldPacket packet)
+    {
+        WowGuid64 trainerGuid64 = packet.ReadGuid();
+        uint learnedSpellId = packet.ReadUInt32();
+        Log.Event("spell.trainer_buy.refresh_list_requested", new
+        {
+            trainer_guid_low = trainerGuid64.GetCounter(),
+            learned_spell_id = learnedSpellId,
+        });
+        WorldPacket refresh = new WorldPacket(Opcode.CMSG_TRAINER_LIST);
+        refresh.WriteGuid(trainerGuid64);
+        SendPacketToServer(refresh);
+    }
+
     [PacketHandler(Opcode.SMSG_TRAINER_BUY_FAILED)]
     void HandleTrainerBuyFailed(WorldPacket packet)
     {
@@ -213,6 +238,31 @@ public partial class WorldClient
         SendPacketToClient(buy);
         ChatPkt chat = new ChatPkt(GetSession(), ChatMessageTypeModern.System, $"Failed to learn Spell {buy.SpellID} (Reason {buy.TrainerFailedReason}).");
         SendPacketToClient(chat);
+
+        // Ban defense: server explicitly rejected the buy, so the predecessor
+        // was NOT removed server-side. Restore it to keep proxy state in sync.
+        uint pendingSpellId = GetSession().GameState.PendingTrainerBuySpellId;
+        uint removedPredecessor = GetSession().GameState.PendingTrainerBuyRemovedPredecessor;
+        if (pendingSpellId != 0 && removedPredecessor != 0)
+        {
+            uint failedSpellId = buy.SpellID;
+            uint failedLearnSpellId = GetSession().GameState.GetLearnSpellFromRealSpell(pendingSpellId);
+            // Server may echo either the real spell id or the learn-wrapper id depending
+            // on legacy expansion. Match on either to be safe.
+            if (failedSpellId == pendingSpellId || failedSpellId == failedLearnSpellId)
+            {
+                GetSession().GameState.CurrentPlayerKnownSpells.Add(removedPredecessor);
+                Log.Event("spell.trainer_buy.predecessor_restored_on_failed", new
+                {
+                    real_spell_id = pendingSpellId,
+                    failed_spell_id = failedSpellId,
+                    predecessor_restored = removedPredecessor,
+                    reason = buy.TrainerFailedReason,
+                });
+            }
+            GetSession().GameState.PendingTrainerBuySpellId = 0u;
+            GetSession().GameState.PendingTrainerBuyRemovedPredecessor = 0u;
+        }
     }
 
     [PacketHandler(Opcode.MSG_TALENT_WIPE_CONFIRM)]
