@@ -2811,24 +2811,42 @@ public class GlobalSessionData
     // call even if InstanceSocket has already been torn down.
     public void PropagateUnplannedDcToModern(string attemptId, string reason)
     {
-        var socket = InstanceSocket;
+        var instanceSock = InstanceSocket;
+        var realmSock = RealmSocket;
         Framework.Logging.Log.Event("session.unplanned_dc.propagated", new
         {
             attempt_id = attemptId,
             reason = reason,
-            had_instance_socket = socket != null,
+            had_instance_socket = instanceSock != null,
+            had_realm_socket = realmSock != null,
         });
-        if (socket != null)
+
+        if (instanceSock != null)
         {
-            try
-            {
-                socket.CloseSocket();
-            }
+            try { instanceSock.CloseSocket(); }
             catch (Exception ex)
             {
                 Framework.Logging.Log.Event("session.unplanned_dc.close_error", new
                 {
                     attempt_id = attemptId,
+                    socket = "instance",
+                    exception_type = ex.GetType().Name,
+                    exception_message = ex.Message,
+                });
+            }
+        }
+
+        // RealmSocket handles CMSG_PING — without closing it the modern client
+        // stays "connected" answering pings indefinitely after a legacy DC.
+        if (realmSock != null)
+        {
+            try { realmSock.CloseSocket(); }
+            catch (Exception ex)
+            {
+                Framework.Logging.Log.Event("session.unplanned_dc.close_error", new
+                {
+                    attempt_id = attemptId,
+                    socket = "realm",
                     exception_type = ex.GetType().Name,
                     exception_message = ex.Message,
                 });
