@@ -3983,13 +3983,21 @@ public static partial class GameData
     // ItemTemplate; no query fires; the reactive path never runs. PushKnownItemEffectFixes
     // forces the corrected records to ship via SMSG_HOTFIX_MESSAGE at login regardless
     // of cache state.
-    private static readonly (uint RecordId, int ParentItemId)[] KnownHealthstoneItemEffects = new[]
+    private static readonly (uint RecordId, int ParentItemId)[] KnownSlotRelocationEffects = new[]
     {
+        // Healthstones
         (97905u, 5509),
         (97906u, 5510),
         (97937u, 5511),
         (97875u, 5512),
         (99320u, 9421),
+        // Mana gems — DB2 records at LegacySlotIndex=1, server places on-use at slot 0.
+        // SpellID is preserved (modern 10052/5405/10057/10058) so Use: tooltip works;
+        // only the slot index is corrected so the action bar can bind and show quantity.
+        (97663u, 5513),  // Mana Jade
+        (97664u, 5514),  // Mana Agate
+        (98334u, 8007),  // Mana Citrine
+        (98355u, 8008),  // Mana Ruby
     };
 
     // Mage mana gems: subject to a *narrowed* slot-mismatch skip — see the call site
@@ -4033,7 +4041,7 @@ public static partial class GameData
     public static List<Server.Packets.HotFixMessage> PushKnownItemEffectFixes()
     {
         var messages = new List<Server.Packets.HotFixMessage>();
-        foreach (var (recordId, parentItemId) in KnownHealthstoneItemEffects)
+        foreach (var (recordId, parentItemId) in KnownSlotRelocationEffects)
         {
             if (!ItemEffectStore.TryGetValue(recordId, out var effect))
                 continue;
