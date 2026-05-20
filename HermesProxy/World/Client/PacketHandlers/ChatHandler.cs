@@ -519,31 +519,11 @@ public partial class WorldClient
             string[] inner = raw.Length > 0 && raw[0] == ':'
                 ? raw.Substring(1).Split(':')
                 : raw.Split(':');
-            // JimsProxy (chat-link-suffix 2026-05-07): WoW Classic Era 1.14 itemString fields
-            // after itemID, verified empirically against bundle jimsproxy-20260507-183921:
-            //   [0] enchantID     [1-4] gem1-4              [5] suffixID
-            //   [6] uniqueID      [7] linkLevel             [8..] specID/upgrade/etc.
-            // (matches the Wowpedia public docs after the leading-colon Substring(1) fix.)
+            // 1.14 itemString fields after itemID: [0] enchantID, [1-4] gems, [5] suffixID.
             int enchant = inner.Length > 0 && int.TryParse(inner[0], out var e) ? e : 0;
             int suffix  = inner.Length > 5 && int.TryParse(inner[5], out var s) ? s : 0;
-            // JimsProxy (chat-link-suffix-vanilla 2026-05-19): vanilla 1.12 servers only have
-            // ItemRandomProperties.dbc — there is no ItemRandomSuffix.dbc in 1.12 (that table
-            // was added in TBC/WotLK). All vanilla item suffixes ("of Power", "of Strength",
-            // "of Stamina", etc.) are ItemRandomProperties rows referenced by POSITIVE IDs on
-            // the wire. The earlier 2026-05-07 version of this code unconditionally negated
-            // the modern client's positive suffix at position 5, on the assumption that
-            // ItemRandomSuffix was the dominant case — but that assumption is inverted: in
-            // vanilla content, every linkable random-suffix item is ItemRandomProperty, and
-            // sending vmangos/Twinstar a negative ID makes them look up a non-existent
-            // ItemRandomSuffix row → suffix dropped from the broadcast → 1.12 client viewers
-            // see "Notched Shortsword" instead of "Notched Shortsword of Power".
-            //
-            // Pass the suffix through with its sign preserved. Modern Classic 1.14 only ever
-            // emits positive at position 5 for vanilla-content items, so this is effectively
-            // "no transform" for the common case. The negative branch is left undisturbed
-            // for forward compatibility — if a future Twinstar build adds ItemRandomSuffix
-            // backports and the modern client somehow encodes it negatively, we already pass
-            // it through correctly.
+            // 1.12 has no ItemRandomSuffix.dbc — all vanilla suffixes are positive
+            // ItemRandomProperty IDs. Pass the sign through; don't negate.
             Framework.Logging.Log.Event("chat.item_link.translated", new
             {
                 item_id = itemId,
