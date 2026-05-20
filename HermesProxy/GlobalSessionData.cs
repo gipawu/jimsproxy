@@ -1219,7 +1219,8 @@ public sealed class GameSessionData
         int marked = 0;
         foreach (var cast in PendingNormalCasts)
         {
-            if (cast.HasStarted && cast.StartedCastTimeMs > 0)
+            if (cast.HasStarted && cast.StartedCastTimeMs > 0
+                && !GameData.IsChanneledSpell(cast.SpellId))
             {
                 cast.MovementCancelled = true;
                 if (cast.WatchdogDeadlineMs == 0)
