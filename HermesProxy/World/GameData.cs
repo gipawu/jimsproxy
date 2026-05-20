@@ -4105,23 +4105,34 @@ public static partial class GameData
         return messages;
     }
 
+    // Mana gems: skip mutation only when the server's slot SpellID doesn't match
+    // any CSV record we have — otherwise the rewrite/new-record path binds the
+    // legacy SpellID (10053/10054) and the modern client strips the Use: line.
+    private static bool ShouldSkipManaGemMutation(ItemTemplate item, byte slot, ItemEffect? effect)
+    {
+        if (!ManaGemItemEntries.Contains(item.Entry))
+            return false;
+        int serverSpellId = item.TriggeredSpellIds[slot];
+        if (serverSpellId <= 0)
+            return false;
+        if (effect != null && effect.SpellID == serverSpellId)
+            return false;
+        return FindItemEffectBySpellId(item.Entry, serverSpellId, slot) == null;
+    }
+
     public static Server.Packets.HotFixMessage? GenerateItemEffectUpdateIfNeeded(ItemTemplate item, byte slot)
     {
-        ItemEffect? effect = GetItemEffectByItemId(item.Entry, slot);
-
         // Warlock spellstones + Orb of Soran'ruk: blanket skip — the modern client's
         // retail ItemEffect record carries an id the SpellDB can't resolve once
         // relocated. See ItemEffectSlotMismatchExclusions above for details.
+        // Checked before the GetItemEffectByItemId lookup so excluded items skip
+        // the ItemEffectStore scan entirely.
         if (ItemEffectSlotMismatchExclusions.Contains(item.Entry))
             return null;
 
-        // Mana gems: skip mutation only when the server's slot SpellID doesn't match
-        // any CSV record we have — otherwise the rewrite/new-record path binds the
-        // legacy SpellID (10053/10054) and the modern client strips the Use: line.
-        if (ManaGemItemEntries.Contains(item.Entry) &&
-            item.TriggeredSpellIds[slot] > 0 &&
-            (effect == null || effect.SpellID != item.TriggeredSpellIds[slot]) &&
-            FindItemEffectBySpellId(item.Entry, item.TriggeredSpellIds[slot], slot) == null)
+        ItemEffect? effect = GetItemEffectByItemId(item.Entry, slot);
+
+        if (ShouldSkipManaGemMutation(item, slot, effect))
             return null;
 
         if (effect != null)
