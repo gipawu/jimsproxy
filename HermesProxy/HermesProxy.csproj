@@ -13,6 +13,12 @@
     <Copyright>Copyright © WowLegacyCore 2023; Fork © jameopotato 2026</Copyright>
     <Authors>WowLegacyCore; jameopotato</Authors>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <!-- JimsProxy: Server GC (per-core heaps + background collection) keeps
+         stop-the-world pauses short under the proxy's high allocation rate.
+         Default Workstation GC produced long pauses that froze packet
+         forwarding and showed up in-game as movement rubberbanding. -->
+    <ServerGarbageCollection>true</ServerGarbageCollection>
+    <ConcurrentGarbageCollection>true</ConcurrentGarbageCollection>
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(UsePublishBuildSettings)' == 'true'">

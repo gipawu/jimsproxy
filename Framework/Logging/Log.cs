@@ -67,6 +67,15 @@ public static class Log
     private static StreamWriter? _jsonlWriter;
     private static readonly object _jsonlLock = new();
     private static string? _jsonlPath;
+    // JimsProxy: structured-log writes run on a dedicated background thread so a
+    // slow disk flush can never block a packet-handling thread (per-event
+    // synchronous flushing here was the cause of in-game rubberbanding under
+    // load). Event() only serializes + enqueues; the writer thread owns all
+    // file I/O. Bounded so a wedged disk drops lines instead of growing memory
+    // unbounded — and TryAdd means the hot path never blocks even when full.
+    private static readonly BlockingCollection<string> _jsonlQueue = new(boundedCapacity: 1 << 18);
+    private static Thread? _jsonlWriterThread;
+    private static long _jsonlDroppedCount;
     private static readonly JsonSerializerOptions _jsonOpts = new()
     {
         WriteIndented = false,
@@ -98,7 +107,10 @@ public static class Log
             _jsonlPath = Path.Combine(logsDir, $"jimsproxy-{stamp}.jsonl");
             _jsonlWriter = new StreamWriter(new FileStream(_jsonlPath, FileMode.Create, FileAccess.Write, FileShare.Read))
             {
-                AutoFlush = true
+                // AutoFlush off: the background writer thread (JsonlWriterLoop) flushes
+                // explicitly. Per-event flushing was synchronous disk I/O on the
+                // packet-handling thread — the cause of in-game rubberbanding under load.
+                AutoFlush = false
             };
         }
         catch (Exception ex)
@@ -117,11 +129,21 @@ public static class Log
     /// </summary>
     public static void StartStructuredLog()
     {
-        if (!StructuredLogEnabled || _jsonlWriter != null)
+        if (!StructuredLogEnabled || _jsonlWriterThread != null)
             return;
         lock (_jsonlLock)
         {
+            if (_jsonlWriterThread != null)
+                return;
             EnsureJsonlOpen();
+            if (_jsonlWriter == null)
+                return; // open failed; EnsureJsonlOpen already disabled structured logging
+            _jsonlWriterThread = new Thread(JsonlWriterLoop)
+            {
+                IsBackground = true,
+                Name = "jsonl-writer",
+            };
+            _jsonlWriterThread.Start();
         }
     }
 
@@ -158,20 +180,63 @@ public static class Log
             });
         }
 
-        lock (_jsonlLock)
+        // Hand off to the background writer thread; never touch the disk here.
+        // TryAdd is non-blocking — if the queue is full (disk wedged) drop the
+        // line rather than stall a packet-handling thread. Once logging has been
+        // shut down (CompleteAdding) TryAdd throws InvalidOperationException;
+        // swallow it so a late Event() during teardown never propagates out.
+        try
         {
-            EnsureJsonlOpen();
-            if (_jsonlWriter == null)
-                return;
+            if (!_jsonlQueue.TryAdd(line))
+                Interlocked.Increment(ref _jsonlDroppedCount);
+        }
+        catch (InvalidOperationException)
+        {
+            // structured logging already closed — drop silently
+        }
+    }
+
+    /// <summary>
+    /// Background pump: drains the structured-log queue and writes to disk.
+    /// Flushes when the queue momentarily empties (so data lands promptly) and
+    /// at least every 1000 lines (so a sustained burst can't defer a flush
+    /// indefinitely). All structured-log file I/O happens here, off the
+    /// packet-handling threads.
+    /// </summary>
+    private static void JsonlWriterLoop()
+    {
+        var sinceFlush = Stopwatch.StartNew();
+        bool writeFailed = false;
+        foreach (var line in _jsonlQueue.GetConsumingEnumerable())
+        {
+            if (_jsonlWriter == null || writeFailed)
+                continue;
             try
             {
                 _jsonlWriter.WriteLine(line);
+                // Flush when the queue momentarily drains, or at least every
+                // 200ms during a sustained burst — bounds how much is lost if
+                // the process is hard-killed before the shutdown hooks run.
+                if (_jsonlQueue.Count == 0 || sinceFlush.ElapsedMilliseconds >= 200)
+                {
+                    _jsonlWriter.Flush();
+                    sinceFlush.Restart();
+                }
             }
             catch (Exception ex)
             {
+                // Stop writing after the first failure — a wedged/full disk fails
+                // every subsequent line, and we don't want one Console.Error line
+                // per queued event. Keep draining the queue so producers' TryAdd
+                // never blocks; the lines are simply discarded.
+                writeFailed = true;
                 StructuredLogEnabled = false;
                 Console.Error.WriteLine($"[JimsProxy] Structured log write failed, disabling: {ex.Message}");
             }
+        }
+        if (!writeFailed)
+        {
+            try { _jsonlWriter?.Flush(); } catch { /* ignore */ }
         }
     }
 
@@ -180,10 +245,31 @@ public static class Log
     /// </summary>
     public static void FlushAndCloseStructuredLog()
     {
+        // Stop accepting new events and let the writer thread drain what's queued.
+        try { _jsonlQueue.CompleteAdding(); } catch { /* already completed */ }
+        bool drained = _jsonlWriterThread == null || _jsonlWriterThread.Join(5000);
+
         lock (_jsonlLock)
         {
-            if (_jsonlWriter != null)
+            // Only dispose once the writer thread has actually finished. If a
+            // wedged disk kept it past the Join timeout, disposing here would
+            // fault it mid-write; leave the handle for the OS to reclaim on exit.
+            if (_jsonlWriter != null && drained)
             {
+                long dropped = Interlocked.Read(ref _jsonlDroppedCount);
+                if (dropped > 0)
+                {
+                    try
+                    {
+                        _jsonlWriter.WriteLine(JsonSerializer.Serialize(new
+                        {
+                            timestamp_ms = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                            eventType = "log.dropped",
+                            payload = new { dropped_lines = dropped },
+                        }, _jsonOpts));
+                    }
+                    catch { /* ignore */ }
+                }
                 try { _jsonlWriter.Flush(); _jsonlWriter.Dispose(); } catch { /* ignore */ }
                 _jsonlWriter = null;
             }
