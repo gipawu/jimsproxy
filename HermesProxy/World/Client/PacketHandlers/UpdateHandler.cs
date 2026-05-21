@@ -34,22 +34,8 @@ public partial class WorldClient
         18223,  // Dreadsteed
     }.ToFrozenSet();
 
-    // Per-ModelId M_native ratio — multiplier applied to vanilla CMS_v when a
-    // model's 1.12 M2 intrinsic ModelScale differs from modern Classic's same-
-    // numbered M2 file. Multiplying CMS_v by this ratio preserves the per-
-    // DisplayID size relationships baked into the vanilla DBC (e.g., one bat
-    // skin meant to render at 0.15 stays half the size of one meant for 0.3),
-    // while compensating for the modern M2 mesh shrink.
-    //
-    // Validated 2026-05-18 on model 411 (FelBat) via two tames same session:
-    //   Ressan (displayId 9750, CMS_v=0.3): K=0.3×2.33≈0.7 → render parity 1.12.
-    //   Greater Duskbat (displayId 4734, CMS_v=0.15): expected K=0.35, renders
-    //     at half Ressan's size matching vanilla intent.
-    // Ratio derivation: see project_flying_pets_open memory.
-    //
-    // A universal family-table-MaxScale floor was tried first and rejected —
-    // it collapsed every low-CMS_v bat to the same K=0.7, erasing the vanilla
-    // intent that different bat skins are different sizes.
+    // Per-ModelId M_native ratio multiplier on vanilla CMS_v, compensating for
+    // 1.12-vs-1.14 M2 intrinsic ModelScale divergence on the same model file.
     internal static readonly FrozenDictionary<int, float> M2NativeRatio = new Dictionary<int, float>
     {
         { 411, 2.33f },  // FelBat — 1.12 intrinsic ≈ 2.33× modern's (Ressan-validated)
@@ -3051,17 +3037,7 @@ public partial class WorldClient
                     if (updateMaskArray[itemIdIndex] || updateMaskArray[permEnchantIndex] || updateMaskArray[tempEnchantIndex])
                     {
                         int itemId = updates.ContainsKey(itemIdIndex) ? updates[itemIdIndex].Int32Value : 0;
-                        // Permanent enchants take visual priority over temporary — matches
-                        // 1.12 native client behavior (parity-confirmed: Crusader / Fiery /
-                        // Lifestealing / etc. wins over an applied poison or shaman imbue
-                        // on the same weapon). PR #22 originally inverted this to surface
-                        // shaman imbues / rogue poisons after the proxy was only reading
-                        // the perm slot, but over-corrected — perm visuals now disappeared
-                        // whenever a poison was on the same weapon. The fallback chain
-                        // still picks up the temp visual when perm has no glow (e.g.
-                        // +stat enchants like Crusader's lower-tier replacements, or no
-                        // perm at all), so shaman/rogue users without a glowy perm still
-                        // see their imbue/poison visual.
+                        // Perm takes visual priority; fall back to temp only when perm has no glow.
                         ushort itemVisual = 0;
                         if (updates.ContainsKey(permEnchantIndex))
                             itemVisual = (ushort)GameData.GetItemEnchantVisual(updates[permEnchantIndex].UInt32Value);

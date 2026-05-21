@@ -4115,19 +4115,9 @@ public static partial class GameData
         if (ItemEffectSlotMismatchExclusions.Contains(item.Entry))
             return null;
 
-        // Mana gems: only skip mutation when the legacy server's spell id for this slot
-        // doesn't match any CSV record we have for the item — i.e., the path below
-        // would either rewrite an existing record's SpellID (effect != null branch) or
-        // create a fresh ItemEffect bound to a legacy SpellID the modern client's
-        // SpellDB can't resolve (new-record branch). In both cases the Use: line is
-        // stripped because 10053/10054 mean "Conjure Citrine/Ruby" in the modern client.
-        //
-        // When the server already serves the modern id (e.g. Twinstar's Citrine has
-        // spellid_1=10057), the slot-relocation path is safe and necessary: it preserves
-        // SpellID and only moves LegacySlotIndex so the client's DB2 record (slot 1)
-        // lines up with the server's placement (slot 0). Skipping it here leaves the
-        // record at LegacySlotIndex=1, the client doesn't find an effect at slot 0
-        // (where the server says the on-use lives), and the Use: line vanishes.
+        // Mana gems: skip mutation only when the server's slot SpellID doesn't match
+        // any CSV record we have — otherwise the rewrite/new-record path binds the
+        // legacy SpellID (10053/10054) and the modern client strips the Use: line.
         if (ManaGemItemEntries.Contains(item.Entry) &&
             item.TriggeredSpellIds[slot] > 0 &&
             (effect == null || effect.SpellID != item.TriggeredSpellIds[slot]) &&
