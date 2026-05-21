@@ -254,6 +254,13 @@ public sealed class GameSessionData
     // source is UNIT_FIELD_HEALTH / UNIT_FIELD_MAXHEALTH from SMSG_UPDATE_OBJECT;
     // we also bump current HP forward on heal events to stay accurate between pushes.
     public ConcurrentDictionary<WowGuid128, (int Hp, int MaxHp)> UnitHealthCache = new();
+    // JimsProxy: per-unit resting (un-hasted) ranged attack time. Vanilla bakes ranged
+    // haste straight into UNIT_FIELD_RANGEDATTACKTIME, but the modern client treats its
+    // RangedAttackRoundBaseTime as the *base* and time-scales the bow draw/release
+    // animation by ModRangedHaste. We track the slowest RANGEDATTACKTIME seen per unit
+    // as the base so we can synthesize ModRangedHaste = resting / current. Written from
+    // the WorldClient handler thread; ConcurrentDictionary keeps it torn-state safe.
+    public ConcurrentDictionary<WowGuid128, uint> RestingRangedAttackTime = new();
     // JimsProxy: pet creature family cache. SMSG_PET_SPELLS_MESSAGE on pre-3.1
     // servers doesn't carry the family on the wire — we derive it from the
     // creature template via GetItemId(petGuid). For quest-tame pets the
