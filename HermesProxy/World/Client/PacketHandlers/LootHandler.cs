@@ -23,7 +23,8 @@ public partial class WorldClient
         loot.AcquireReason = (LootType)packet.ReadUInt8();
         if (loot.AcquireReason == LootType.None)
         {
-            loot.FailureReason = (LootError)packet.ReadUInt8(); //MIRASU
+            if (packet.CanRead())
+                loot.FailureReason = (LootError)packet.ReadUInt8(); //MIRASU
             loot.Acquired = false;                               //MIRASU - client gates red chat line on !Acquired
             SendPacketToClient(loot);                            //MIRASU - was missing: failure never reached client, loot cursor hung
             return;
@@ -31,12 +32,26 @@ public partial class WorldClient
         GetSession().GameState.LastLootTargetGuid = targetGuid;  //MIRASU - only commit on success so failures don't poison subsequent LastLootTargetGuid consumers (LOOT_REMOVED / LOOT_CLEAR_MONEY / LOOT_MONEY_NOTIFY)
         loot.LootMethod = GetSession().GameState.GetCurrentLootMethod();
 
-        loot.Coins = packet.ReadUInt32();
+        // Bounded reads past the fixed guid+type header. A booby-trapped Stratholme
+        // crate (GO 175537) sends a short SMSG_LOOT_RESPONSE the full-structure parse
+        // overran — an IndexOutOfRangeException in the receive loop DC'd the session.
+        // A malformed/short loot packet must degrade to an empty loot window, never a DC.
+        loot.Coins = packet.CanRead(4) ? packet.ReadUInt32() : 0;
         GetSession().GameState.CurrentLootCoins = loot.Coins; //MIRASU - stash for synthesizing SMSG_LOOT_MONEY_NOTIFY on pickup (Kronos/TC-1.12 doesn't send it)
 
-        var itemsCount = packet.ReadUInt8();
+        var itemsCount = packet.CanRead() ? packet.ReadUInt8() : (byte)0;
         for (var i = 0; i < itemsCount; ++i)
         {
+            if (!packet.CanRead(LootItemWireSize))
+            {
+                Framework.Logging.Log.Event("loot.response.truncated", new
+                {
+                    owner_guid_low = targetGuid.GetLowValue(),
+                    declared_items = itemsCount,
+                    parsed_items = i,
+                });
+                break;
+            }
             LootItemData lootItem = new();
             lootItem.LootListID = packet.ReadUInt8();
             lootItem.Loot.ItemID = packet.ReadUInt32();
@@ -51,6 +66,10 @@ public partial class WorldClient
         SendMasterLootListIfApplicable();
         SendPacketToClient(loot);
     }
+
+    // Per-item wire size in SMSG_LOOT_RESPONSE: slot(1) + itemId(4) + quantity(4)
+    // + displayId(4) + randomSeed(4) + randomPropId(4) + slotType(1).
+    private const int LootItemWireSize = 22;
 
     [PacketHandler(Opcode.SMSG_LOOT_RELEASE)]
     void HandleLootRelease(WorldPacket packet)
