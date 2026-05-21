@@ -1055,8 +1055,11 @@ public static class ModernVersion
     public static byte ConvertResponseCodesValue(byte legacyValue)
     {
         string legacyName = Enum.ToObject(LegacyVersion.GetResponseCodesEnum()!, legacyValue).ToString()!;
+        // Enum.TryParse returns a boxed enum whose underlying type is byte.
+        // CLR unboxing requires the exact type — (int) fails on a byte-backed
+        // enum, so cast directly to the underlying type.
         if (Enum.TryParse(GetResponseCodesEnum()!, legacyName, out object? modern))
-            return (byte)(int)modern;
+            return (byte)modern;
         Framework.Logging.Log.Print(Framework.Logging.LogType.Error,
             $"Unmapped ResponseCode: legacy byte {legacyValue} name '{legacyName}'");
         return legacyValue;
