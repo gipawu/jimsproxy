@@ -4404,12 +4404,35 @@ public partial class WorldClient
                     }
                 }
 
+                // Server-pre-scaled summons: engineering trinket pets (Mechanical
+                // Battle Chicken display 6909, Mithril Dragonling 7908, etc.) have
+                // creature_template.display_scale set to CMS_v, so the legacy server
+                // sends wire == CMS_v. The 1.12 client renders wire × ModelScale; the
+                // 1.14 client *also* applies CreatureModelScale → wire × CMS × ModelScale
+                // = CMS_v² — visibly oversized (3×3 chicken). Mirror the NPC path's
+                // wire-pre-scaled strip: when wire ≈ CMS_v (and isn't the server-default
+                // 1.0), drop wire to 1.0 so the client lands at vanilla baseline.
+                // Real hunter/warlock pets are unaffected — their wire is the server-
+                // default 1.0, which the `!= 1.0` guard excludes.
+                // Gate strictly on wire > 1.0: the double-application bug only renders
+                // a creature OVERSIZED when the server pre-scales above 1.0 (chicken 3,
+                // dragonling 1.15). Small pets legitimately carry wire < 1.0 (voidwalker
+                // 0.8, tamed bats 0.43) and must keep the M2NativeRatio / family-table
+                // logic — stripping them to 1.0 wrongly inflates them.
+                float effectivePetWire = rawScale;
+                bool petWirePreScaled = vanillaCmsK.HasValue
+                    && rawScale > 1.01f
+                    && rawScale >= vanillaCmsK.Value - 0.01f
+                    && rawScale < vanillaCmsK.Value * 1.5f;
+                if (petWirePreScaled)
+                    effectivePetWire = 1.0f;
+
                 // Skip normalization if CMS data is missing/invalid — fall back to a flat
                 // K multiply so the pet still gets a size bump rather than passing through
                 // un-modified (and rendering small).
                 float emit = (cms > 0)
-                    ? (rawScale / cms) * k
-                    : rawScale * k;
+                    ? (effectivePetWire / cms) * k
+                    : effectivePetWire * k;
 
                 updateData.ObjectData.Scale = emit;
 
@@ -4427,6 +4450,8 @@ public partial class WorldClient
                                : familyTableK.HasValue ? "family-table"
                                : (isWarlockPet ? "k-warlock-fallback" : "k-hunter-fallback"),
                     raw_scale = rawScale,
+                    wire_pre_scaled = petWirePreScaled,
+                    effective_wire = effectivePetWire,
                     emitted_scale = emit,
                     matched_via = (currentPetGuid != default && guid == currentPetGuid) ? "current_pet_guid" : "summoned_by",
                     cms_fallback = cms <= 0,

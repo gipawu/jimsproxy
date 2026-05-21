@@ -471,9 +471,23 @@ public partial class WorldClient
                 ? vanillaCmsK!.Value * WorldClient.M2NativeRatio[modelIdForRatio]
                 : (vanillaCmsK ?? familyTableK ?? (p.IsWarlockPet ? 0.75f : 1.5f));
 
+            // Server-pre-scaled summons (engineering trinket pets): strip the
+            // pre-baked wire scale, mirroring UpdateHandler's pet branch — without
+            // this, the creature-query resolver re-emits the oversized value
+            // 200-300ms after summon and overrides the corrected first emit.
+            // Gate on wire > 1.0 — see the matching comment in UpdateHandler's pet
+            // branch. Small pets (wire < 1.0) keep their M2NativeRatio/family logic.
+            float effectiveWire = p.RawScale;
+            bool wirePreScaled = vanillaCmsK.HasValue
+                && p.RawScale > 1.01f
+                && p.RawScale >= vanillaCmsK.Value - 0.01f
+                && p.RawScale < vanillaCmsK.Value * 1.5f;
+            if (wirePreScaled)
+                effectiveWire = 1.0f;
+
             float emit = (p.Cms > 0)
-                ? (p.RawScale / p.Cms) * k
-                : p.RawScale * k;
+                ? (effectiveWire / p.Cms) * k
+                : effectiveWire * k;
 
             // Synthesize a values-update carrying just OBJECT_FIELD_SCALE_X.
             UpdateObject updateObject = new UpdateObject(GetSession().GameState);
@@ -494,6 +508,8 @@ public partial class WorldClient
                            : familyTableK.HasValue ? "family-table"
                            : (p.IsWarlockPet ? "k-warlock-fallback" : "k-hunter-fallback"),
                 raw_scale = p.RawScale,
+                wire_pre_scaled = wirePreScaled,
+                effective_wire = effectiveWire,
                 emitted_scale = emit,
             });
 
