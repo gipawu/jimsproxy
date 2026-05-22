@@ -450,6 +450,7 @@ public partial class WorldClient
         // gated on a clean socket lifetime through the char-select transition.
         var lingeringSocket = GetSession().InstanceSocket;
         GetSession().InstanceSocket = null!;
+        GetSession().LingeringInstanceSocket = lingeringSocket;
         var holdStart = DateTime.UtcNow;
         Log.Event("session.logout_complete.socket_hold_started", new
         {
@@ -471,6 +472,7 @@ public partial class WorldClient
                 {
                     if (lingeringSocket == null || !lingeringSocket.IsOpen())
                     {
+                        GetSession().LingeringInstanceSocket = null;
                         var elapsed = (long)(DateTime.UtcNow - holdStart).TotalMilliseconds;
                         Log.Event("session.logout_complete.client_closed_first", new
                         {
@@ -484,6 +486,7 @@ public partial class WorldClient
                 if (lingeringSocket != null && lingeringSocket.IsOpen())
                 {
                     lingeringSocket.CloseSocket();
+                    GetSession().LingeringInstanceSocket = null;
                     Log.Event("session.logout_complete.safety_net_closed", new
                     {
                         elapsed_ms = LogoutCompleteSocketHoldMs,

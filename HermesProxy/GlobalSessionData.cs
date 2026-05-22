@@ -2132,6 +2132,7 @@ public class GlobalSessionData
 
     public WorldSocket RealmSocket = null!;
     public WorldSocket InstanceSocket = null!;
+    public volatile WorldSocket? LingeringInstanceSocket;
     public AuthClient AuthClient = null!;
     public WorldClient? WorldClient;
     // JimsProxy: set true on SMSG_LOGOUT_COMPLETE so the next CMSG_PLAYER_LOGIN
