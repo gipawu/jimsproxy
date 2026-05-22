@@ -282,6 +282,19 @@ public partial class WorldSocket
         if (GetSession().AuthClient != null)
             GetSession().AuthClient.Disconnect();
 
+        // Close lingering instance socket from the previous logout's safety-net
+        // hold before sending ConnectTo. The WTF flush is done by now (user spent
+        // ≥2s at char select), but the 3s safety-net may not have fired yet. If
+        // the old socket is still alive when ConnectTo arrives, the modern client
+        // sees two instance connections and disconnects with reason 3.
+        var lingering = GetSession().LingeringInstanceSocket;
+        if (lingering != null)
+        {
+            if (lingering.IsOpen())
+                lingering.CloseSocket();
+            GetSession().LingeringInstanceSocket = null;
+        }
+
         SendConnectToInstance(ConnectToSerial.WorldAttempt1);
         GetSession().GameState.IsConnectedToInstance = true;
         GetSession().GameState.IsFirstEnterWorld = true;
