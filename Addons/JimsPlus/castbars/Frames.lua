@@ -10,6 +10,7 @@ local min = _G.math.min
 local max = _G.math.max
 local ceil = _G.math.ceil
 local InCombatLockdown = _G.InCombatLockdown
+local tradeskillIconCache = {}
 
 local nonLSMBorders = {
     ["Interface\\CastingBar\\UI-CastingBar-Border-Small"] = true,
@@ -449,6 +450,31 @@ function addon:SkinPlayerCastbar()
         CastingBarFrame:HookScript("OnShow", function(frame)
             if frame.Icon:GetTexture() == 136235 then
                 frame.Icon:SetTexture(136243)
+            end
+
+            -- 1.14.2 DB2 has Spell_Shadow_SealOfKings (136192) for ~400
+            -- tradeskill craft spells. Replace with the correct recipe icon.
+            if frame.Icon:GetTexture() == 136192 then
+                local name, _, _, _, _, isTradeSkill = CastingInfo()
+                if isTradeSkill and name then
+                    local cached = tradeskillIconCache[name]
+                    if cached then
+                        frame.Icon:SetTexture(cached)
+                    else
+                        local icon
+                        if _G.TradeSkillFrame and _G.TradeSkillFrame:IsShown() then
+                            local idx = GetTradeSkillSelectionIndex()
+                            if idx and idx > 0 then icon = GetTradeSkillIcon(idx) end
+                        elseif _G.CraftFrame and _G.CraftFrame:IsShown() then
+                            local idx = GetCraftSelectionIndex()
+                            if idx and idx > 0 then icon = GetCraftIcon(idx) end
+                        end
+                        if icon then
+                            tradeskillIconCache[name] = icon
+                            frame.Icon:SetTexture(icon)
+                        end
+                    end
+                end
             end
 
             if not addon.playerColorChangesRan then
