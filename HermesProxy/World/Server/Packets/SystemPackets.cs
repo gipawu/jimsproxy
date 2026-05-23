@@ -125,7 +125,7 @@ public class FeatureSystemStatus : ServerPacket
         if (ModernVersion.IsClassicVersionBuild())
         {
             _worldPacket.WriteBit(BattlegroundsEnabled);
-            _worldPacket.WriteBit(RaceClassExpansionLevels != null);
+            _worldPacket.WriteBit(RaceClassExpansionLevels.Count > 0);
         }
         
         _worldPacket.FlushBits();
@@ -165,7 +165,7 @@ public class FeatureSystemStatus : ServerPacket
 
         if (ModernVersion.IsClassicVersionBuild())
         {
-            if (RaceClassExpansionLevels != null)
+            if (RaceClassExpansionLevels.Count > 0)
             {
                 _worldPacket.WriteInt32(RaceClassExpansionLevels.Count);
                 for (var i = 0; i < RaceClassExpansionLevels.Count; ++i)

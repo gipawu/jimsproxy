@@ -741,7 +741,7 @@ class PartyMemberPartialState : ServerPacket
         _worldPacket.WriteBit(WmoDoodadPlacementID.HasValue);
         _worldPacket.WriteBit(Position != null);
         _worldPacket.WriteBit(VehicleSeatRecID.HasValue);
-        _worldPacket.WriteBit(Auras != null);
+        _worldPacket.WriteBit(Auras.Count > 0);
         _worldPacket.WriteBit(Pet != null);
         _worldPacket.WriteBit(Phase != null);
         _worldPacket.WriteBit(Unk901_2 != null);
@@ -789,7 +789,7 @@ class PartyMemberPartialState : ServerPacket
         }
         if (VehicleSeatRecID.HasValue)
             _worldPacket.WriteUInt32(VehicleSeatRecID.Value);
-        if (Auras != null)
+        if (Auras.Count > 0)
         {
             _worldPacket.WriteInt32(Auras.Count);
             foreach (var aura in Auras)
@@ -998,7 +998,7 @@ public class PartyMemberPetStats
         data.WriteBit(DisplayID.HasValue);
         data.WriteBit(MaxHealth.HasValue);
         data.WriteBit(Health.HasValue);
-        data.WriteBit(Auras != null);
+        data.WriteBit(Auras.Count > 0);
         data.FlushBits();
 
         if (NewPetName != null)
@@ -1014,7 +1014,7 @@ public class PartyMemberPetStats
             data.WriteUInt32(MaxHealth.Value);
         if (Health.HasValue)
             data.WriteUInt32(Health.Value);
-        if (Auras != null)
+        if (Auras.Count > 0)
         {
             data.WriteInt32(Auras.Count);
             foreach (var aura in Auras)
