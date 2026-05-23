@@ -3871,7 +3871,7 @@ public partial class WorldClient
                 // acquisition entirely and the cast fails as "Out of range" before any
                 // packet leaves the client. See HermesProxy issue #374.
                 int? entry = updateData.ObjectData.EntryID;
-                bool isMcRune = entry.HasValue && entry.Value >= 176951 && entry.Value <= 176957;
+                bool isMcRune = true;
                 bool dynNoInteractInjected = false;
                 if (isMcRune)
                 {
