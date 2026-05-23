@@ -281,7 +281,8 @@ public partial class WorldSocket : SocketBase, BnetServices.INetwork
                                 opcode == Opcode.CMSG_ENABLE_NAGLE ||
                                 opcode == Opcode.CMSG_CONNECT_TO_FAILED ||
                                 opcode == Opcode.CMSG_ENTER_ENCRYPTED_MODE_ACK ||
-                                opcode == Opcode.CMSG_SERVER_TIME_OFFSET_REQUEST;
+                                opcode == Opcode.CMSG_SERVER_TIME_OFFSET_REQUEST ||
+                                opcode == Opcode.CMSG_QUERY_REALM_NAME;
         Log.Event("packet.in", new
         {
             direction = "c2s",
@@ -362,6 +363,9 @@ public partial class WorldSocket : SocketBase, BnetServices.INetwork
                 break;
             case Opcode.CMSG_SERVER_TIME_OFFSET_REQUEST:
                 SendServerTimeOffset();
+                break;
+            case Opcode.CMSG_QUERY_REALM_NAME:
+                HandleQueryRealmName(packet);
                 break;
             default:
                 HandlePacket(packet);
@@ -1265,6 +1269,30 @@ public partial class WorldSocket : SocketBase, BnetServices.INetwork
     {
         ServerTimeOffset response = new();
         response.Time = Time.UnixTime;
+        SendPacket(response);
+    }
+
+    void HandleQueryRealmName(WorldPacket packet)
+    {
+        uint realmAddress = packet.ReadUInt32();
+        var realm = GetSession().RealmManager.GetRealm(new Framework.Realm.RealmId(realmAddress));
+
+        RealmQueryResponse response = new();
+        response.VirtualRealmAddress = realmAddress;
+        if (realm != null)
+        {
+            response.LookupState = 0; // success
+            response.NameInfo = new VirtualRealmNameInfo(
+                realmAddress == GetSession().RealmId.GetAddress(),
+                false,
+                realm.Name,
+                realm.NormalizedName);
+        }
+        else
+        {
+            response.LookupState = 1; // failure
+            response.NameInfo = new VirtualRealmNameInfo(false, false, "", "");
+        }
         SendPacket(response);
     }
 
