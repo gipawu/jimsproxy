@@ -50,18 +50,29 @@ CreateDescription(panel, "These fix bugs in the 1.14 client when connected to a 
 y = y - 22
 
 local cbPetFix = CreateCheckbox(panel, y,
-    "Pet UI crash fix  |cFFFF6600(reload required)|r",
-    "Prevents Lua errors when opening the pet stats or stable UI.\nHunter pets from vanilla servers don't have a player class,\nwhich crashes the 1.14 client's FrameXML code.\n\nChanges take effect after /reload.")
+    "Pet UI crash fix  |cFF888888(always on)|r",
+    "Prevents Lua errors when opening the pet stats or stable UI.\nHunter pets from vanilla servers don't have a player class,\nwhich crashes the 1.14 client's FrameXML code.\n\nThis fix cannot be disabled — without it the pet UI is broken.")
+cbPetFix:SetChecked(true)
+cbPetFix:Disable()
+cbPetFix.Text:SetTextColor(0.5, 0.5, 0.5)
 y = y - 28
 
 local cbTaxiFix = CreateCheckbox(panel, y,
-    "Hide early-landing button",
-    "Hides the \"Stop at next flight path\" button during flights.\nVanilla servers don't support early landing — clicking it\ndoes nothing. This removes the misleading button.")
+    "Hide early-landing button  |cFF888888(always on)|r",
+    "Hides the \"Stop at next flight path\" button during flights.\nVanilla servers don't support early landing — clicking it\ndoes nothing.\n\nThis fix cannot be disabled — the button has no function on vanilla servers.")
+cbTaxiFix:SetChecked(true)
+cbTaxiFix:Disable()
+cbTaxiFix.Text:SetTextColor(0.5, 0.5, 0.5)
 y = y - 28
 
 local cbTooltipFix = CreateCheckbox(panel, y,
     "Off-class armor / weapon red text  |cFFFF6600(reload required)|r",
     "Recolors armor type and weapon type to red on item tooltips and vendor\nrows when your class can't use the item (e.g. \"Mail\" on a rogue, \"Plate\"\non a hunter), based on the proficiencies you've actually trained.\n\nThe 1.14 Classic Era client gets this signal from a hardcoded table\nthe proxy can't reach over the wire — this addon does the recolor\nclient-side.\n\nChanges take effect after /reload.")
+y = y - 28
+
+local cbMoonkinSound = CreateCheckbox(panel, y,
+    "Moonkin Form sound  |cFF888888(Druid only)|r",
+    "Gives Moonkin Form a distinct transformation sound instead\nof reusing the Bear Form sound.\n\nOnly affects Druid characters.")
 y = y - 40
 
 ---------------------------------------------------------------------------
@@ -76,7 +87,7 @@ local castbarUnits = {
     { key = "target",    label = "Target",     tooltip = "Shows what your current target is casting.\nEssential for interrupting enemy spells." },
     { key = "nameplate", label = "Nameplates",  tooltip = "Shows cast bars on nameplates above characters' heads.\nUseful in dungeons and PvP to see multiple casts at once." },
     { key = "focus",     label = "Focus",       tooltip = "Shows what your focus target is casting.\nUseful for watching a specific mob while targeting another." },
-    { key = "player",    label = "Player  |cFF888888(reskins Blizzard bar)|r", tooltip = "Replaces the default Blizzard cast bar with the JimsPlus style.\nPurely cosmetic — disable if you prefer the default look\nor use another cast bar addon." },
+    { key = "player",    label = "Player  |cFF888888(reskins Blizzard bar)|r", tooltip = "Replaces the default Blizzard cast bar with the JimsPlus style.\nAlso fixes incorrect icons on tradeskill craft bars.\n\nDisable if you prefer the default look or use another cast bar addon." },
     { key = "party",     label = "Party members", tooltip = "Shows cast bars on party member frames.\nUseful for seeing when your healer is casting." },
 }
 
@@ -91,9 +102,8 @@ end
 ---------------------------------------------------------------------------
 local function RefreshCheckboxes()
     local db = namespace.db or JimsPlusDB or {}
-    cbPetFix:SetChecked(db.petFix == true)
-    cbTaxiFix:SetChecked(db.taxiFix == true)
     cbTooltipFix:SetChecked(db.tooltipFix == true)
+    cbMoonkinSound:SetChecked(db.moonkinSound ~= false)
 
     local cdb = JimsPlusCastbars and JimsPlusCastbars.db
     if cdb then
@@ -115,28 +125,20 @@ end)
 ---------------------------------------------------------------------------
 -- OnClick handlers
 ---------------------------------------------------------------------------
-cbPetFix:SetScript("OnClick", function(self)
-    local enabled = self:GetChecked() and true or false
-    if namespace.db then
-        namespace.db.petFix = enabled
-    end
-    print("|cFF00FF00[JimsPlus]|r Pet UI fix " .. (enabled and "enabled" or "disabled") .. ". Type /reload to apply.")
-end)
-
-cbTaxiFix:SetScript("OnClick", function(self)
-    local enabled = self:GetChecked() and true or false
-    if namespace.db then
-        namespace.db.taxiFix = enabled
-    end
-    print("|cFF00FF00[JimsPlus]|r Early-landing button " .. (enabled and "hidden" or "shown") .. ". Type /reload to apply.")
-end)
-
 cbTooltipFix:SetScript("OnClick", function(self)
     local enabled = self:GetChecked() and true or false
     if namespace.db then
         namespace.db.tooltipFix = enabled
     end
     print("|cFF00FF00[JimsPlus]|r Off-class armor red text " .. (enabled and "enabled" or "disabled") .. ". Type /reload to apply.")
+end)
+
+cbMoonkinSound:SetScript("OnClick", function(self)
+    local enabled = self:GetChecked() and true or false
+    if namespace.db then
+        namespace.db.moonkinSound = enabled
+    end
+    print("|cFF00FF00[JimsPlus]|r Moonkin Form sound " .. (enabled and "enabled" or "disabled") .. ". Type /reload to apply.")
 end)
 
 for _, info in ipairs(castbarUnits) do
